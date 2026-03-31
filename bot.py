@@ -105,7 +105,6 @@ def _enrich_with_season_stats(challenge: dict) -> dict:
 
 
 async def _send_chunked_message(target, text: str, limit: int = 2000) -> int:
-async def _send_chunked_message(target, text: str, limit: int = 1900) -> int:
     """
     Send long Discord content in multiple messages to avoid 2000-char limit.
     Splits on line boundaries when possible.
