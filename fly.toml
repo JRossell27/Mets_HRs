@@ -6,6 +6,11 @@ primary_region = "ewr"
 [env]
   POLL_INTERVAL = "30"
   LOG_LEVEL = "INFO"
+  DATA_DIR = "/data"
+
+[[mounts]]
+  source = "abs_data"
+  destination = "/data"
 
 [http_service]
   internal_port = 8080

@@ -95,19 +95,23 @@ class MLBMonitor:
     async def get_todays_games(self) -> list[dict]:
         """Fetch today's MLB schedule (Eastern time)."""
         today = datetime.now(EASTERN).strftime("%Y-%m-%d")
+        return await self.get_games_for_date(today)
+
+    async def get_games_for_date(self, date_str: str) -> list[dict]:
+        """Fetch the MLB schedule for a specific date (YYYY-MM-DD)."""
         url = (
             f"{MLB_API_BASE}/v1/schedule"
-            f"?sportId=1&date={today}&hydrate=linescore,team"
+            f"?sportId=1&date={date_str}&hydrate=linescore,team"
         )
         try:
             session = await self._get_session()
             async with session.get(url) as resp:
                 if resp.status != 200:
-                    logger.warning("Schedule API returned %s", resp.status)
+                    logger.warning("Schedule API returned %s for date %s", resp.status, date_str)
                     return []
                 data = await resp.json()
         except Exception as exc:
-            logger.error("Failed to fetch schedule: %s", exc)
+            logger.error("Failed to fetch schedule for %s: %s", date_str, exc)
             return []
 
         games = []
@@ -128,6 +132,42 @@ class MLBMonitor:
         except Exception as exc:
             logger.error("Failed to fetch live feed for game %s: %s", game_pk, exc)
             return None
+
+    def _get_active_catcher(self, feed: dict, fielding_team_key: str) -> str:
+        """
+        Return the name of the currently active catcher for the given team
+        ('home' or 'away') from the boxscore.  Returns '' if not determinable.
+        """
+        try:
+            players = (
+                feed.get("liveData", {})
+                    .get("boxscore", {})
+                    .get("teams", {})
+                    .get(fielding_team_key, {})
+                    .get("players", {})
+            )
+            # Position code "2" = Catcher; exclude bench players
+            active_catchers = [
+                p for p in players.values()
+                if p.get("position", {}).get("code") == "2"
+                and not p.get("gameStatus", {}).get("isOnBench", False)
+            ]
+            if active_catchers:
+                return active_catchers[0]["person"]["fullName"]
+        except Exception:
+            pass
+        return ""
+
+    def extract_all_challenges_from_feed(self, feed: dict, game_pk: int) -> list[dict]:
+        """
+        Extract all challenge events from a completed game feed without
+        modifying the live-tracking seen-challenge state.  Used for backfill.
+        """
+        original = self._seen_challenges.get(game_pk, set()).copy()
+        self._seen_challenges[game_pk] = set()
+        challenges = self._extract_challenges_from_feed(feed, game_pk)
+        self._seen_challenges[game_pk] = original
+        return challenges
 
     def _extract_challenges_from_feed(self, feed: dict, game_pk: int) -> list[dict]:
         """
@@ -226,6 +266,23 @@ class MLBMonitor:
 
                 event_time = play_event.get("startTime", "")
 
+                # Determine who issued the challenge and their role.
+                # Batting team challenge → batter; fielding team → catcher (or
+                # pitcher as fallback if catcher cannot be resolved from boxscore).
+                batting_team = away_team if is_top else home_team
+                fielding_team_key = "home" if is_top else "away"
+                if challenging_team == batting_team:
+                    challenger_name = batter_name
+                    challenger_role = "batter"
+                else:
+                    catcher = self._get_active_catcher(feed, fielding_team_key)
+                    if catcher:
+                        challenger_name = catcher
+                        challenger_role = "catcher"
+                    else:
+                        challenger_name = pitcher_name
+                        challenger_role = "pitcher"
+
                 challenge = {
                     "uid": uid,
                     "game_pk": game_pk,
@@ -251,6 +308,8 @@ class MLBMonitor:
                     "strikes": count.get("strikes", 0),
                     "outs": count.get("outs", 0),
                     "event_time": event_time,
+                    "challenger_name": challenger_name,
+                    "challenger_role": challenger_role,
                 }
                 new_challenges.append(challenge)
 

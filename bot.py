@@ -3,7 +3,11 @@ MLB Pitch Challenge Discord Bot
 
 Monitors MLB games in real-time and sends a message to a Discord channel
 whenever a pitch challenge (ABS challenge or manager challenge) is detected.
-Each message contains Twitter/X-ready copy-paste text.
+Each message contains Twitter/X-ready copy-paste text including the
+challenging player's season success rate.
+
+After all games each day are final the bot posts a full ABS season tracker
+recap comparing batters, catchers, and pitchers by challenge success rate.
 
 Required environment variables:
   DISCORD_TOKEN    — Your Discord bot token
@@ -12,19 +16,22 @@ Required environment variables:
 Optional:
   POLL_INTERVAL    — Seconds between polls (default: 30)
   LOG_LEVEL        — Logging level (default: INFO)
+  DATA_DIR         — Directory for persistent data file (default: current dir)
 """
 
 import asyncio
 import logging
 import os
 import sys
-from collections import defaultdict
 from aiohttp import web
 
 import discord
+import pytz
+from datetime import datetime
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
+from abs_tracker import ABSSeasonTracker
 from message_formatter import format_challenge_message, format_update_message
 from mlb_monitor import MLBMonitor
 
@@ -35,6 +42,8 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 CHANNEL_ID_STR = os.getenv("CHANNEL_ID", "")
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "30"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+EASTERN = pytz.timezone("US/Eastern")
 
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
@@ -60,10 +69,38 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 monitor = MLBMonitor()
+tracker = ABSSeasonTracker()
 
 # Track in-progress challenges so we can send result updates.
 # {uid: discord.Message}
 pending_challenges: dict[str, discord.Message] = {}
+
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+def _all_games_final(games: list[dict]) -> bool:
+    """
+    Returns True when every game today is no longer live or upcoming
+    (i.e. no game will produce any more challenges).
+    """
+    if not games:
+        return False
+    ongoing = {"I", "IR", "IO", "MA", "MF", "S", "PW", "PR"}
+    return not any(
+        g.get("status", {}).get("statusCode", "") in ongoing for g in games
+    )
+
+
+def _enrich_with_season_stats(challenge: dict) -> dict:
+    """
+    Attach the challenging player's current season stats to the challenge dict
+    so the formatter can display the success percentage.
+    Only meaningful for resolved (non-in-progress) challenges.
+    """
+    stats = tracker.get_player_stats(challenge.get("challenger_name", ""))
+    if stats:
+        challenge["challenger_season_stats"] = stats
+    return challenge
 
 
 # ─── Background polling task ─────────────────────────────────────────────────
@@ -94,9 +131,11 @@ async def poll_mlb():
             except Exception as exc:
                 logger.error("Failed to send challenge message: %s", exc)
         else:
-            # Challenge already resolved — send final message
+            # Challenge resolved — record to tracker FIRST so stats are current
             try:
-                # If we had an in-progress message, edit it; otherwise post new
+                tracker.record_challenge(challenge)
+                _enrich_with_season_stats(challenge)
+
                 if uid in pending_challenges:
                     old_msg = pending_challenges.pop(uid)
                     update_text = format_challenge_message(challenge)
@@ -108,6 +147,19 @@ async def poll_mlb():
                     logger.info("Challenge resolved (new message): %s", uid)
             except Exception as exc:
                 logger.error("Failed to send/edit challenge message: %s", exc)
+
+    # ── Daily recap check ────────────────────────────────────────────────────
+    today_str = datetime.now(EASTERN).strftime("%Y-%m-%d")
+    if not tracker.has_posted_recap(today_str):
+        try:
+            games = await monitor.get_todays_games()
+            if _all_games_final(games):
+                recap = tracker.generate_daily_recap()
+                await channel.send(recap)
+                tracker.mark_recap_posted(today_str)
+                logger.info("Posted ABS daily recap for %s", today_str)
+        except Exception as exc:
+            logger.error("Failed to post daily recap: %s", exc)
 
 
 @poll_mlb.before_loop
@@ -121,8 +173,22 @@ async def before_poll():
 async def on_ready():
     logger.info("Logged in as %s (ID: %s)", bot.user, bot.user.id)
     logger.info("Posting alerts to channel ID: %s", CHANNEL_ID)
+
+    # Backfill historical ABS data from season start in the background so
+    # the bot is ready to poll immediately without waiting for backfill.
+    asyncio.create_task(_run_backfill())
+
     if not poll_mlb.is_running():
         poll_mlb.start()
+
+
+async def _run_backfill():
+    """Run the season backfill in the background at startup."""
+    try:
+        recorded = await tracker.backfill_season(monitor)
+        logger.info("Season backfill finished — %d historical challenges loaded", recorded)
+    except Exception as exc:
+        logger.error("Season backfill failed: %s", exc)
 
 
 @bot.event
@@ -160,6 +226,13 @@ async def status(ctx):
     await ctx.send("\n".join(lines))
 
 
+@bot.command(name="absstats")
+async def abs_stats(ctx):
+    """Post the current ABS season challenge leaderboard."""
+    recap = tracker.generate_daily_recap()
+    await ctx.send(recap)
+
+
 @bot.command(name="testchallenge")
 @commands.is_owner()
 async def test_challenge(ctx):
@@ -179,6 +252,8 @@ async def test_challenge(ctx):
         "inning_half": "Top",
         "pitcher": "Gerrit Cole",
         "batter": "Francisco Lindor",
+        "challenger_name": "Francisco Lindor",
+        "challenger_role": "batter",
         "challenging_team": "Mets",
         "review_type": "Pitch Challenge (ABS)",
         "is_in_progress": False,
@@ -196,6 +271,14 @@ async def test_challenge(ctx):
         "strikes": 2,
         "outs": 1,
         "event_time": "",
+        # Fake season stats for display test
+        "challenger_season_stats": {
+            "role": "batter",
+            "team": "NYM",
+            "challenges": 8,
+            "overturned": 5,
+            "upheld": 3,
+        },
     }
     msg = format_challenge_message(fake)
     await ctx.send(msg)
@@ -207,10 +290,13 @@ async def help_bot(ctx):
     help_text = (
         "**MLB Pitch Challenge Bot Commands**\n\n"
         "`!status` — Show today's games and live monitoring status\n"
+        "`!absstats` — Show the current ABS season challenge leaderboard\n"
         "`!testchallenge` — (owner only) Send a test challenge message\n"
         "`!help_bot` — Show this help message\n\n"
         "The bot automatically monitors all MLB games and posts an alert "
-        "with Twitter-ready text whenever a pitch challenge occurs."
+        "with Twitter-ready text whenever a pitch challenge occurs, including "
+        "the challenging player's season success rate.  After all games each "
+        "day are final, a full ABS season tracker recap is posted."
     )
     await ctx.send(help_text)
 
