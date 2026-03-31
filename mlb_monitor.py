@@ -64,7 +64,28 @@ ZONE_DESCRIPTIONS = {
 }
 
 
-def _is_challenge_event(event_details: dict) -> bool:
+def _extract_review_details(event_details: dict, play_event: dict, play: dict) -> dict:
+    """
+    Pull review metadata from whichever shape MLB feed is using.
+    """
+    candidates = [
+        event_details.get("reviewDetails"),
+        play_event.get("reviewDetails"),
+        play.get("reviewDetails"),
+        play.get("result", {}).get("reviewDetails"),
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, dict) and candidate:
+            return candidate
+    return {}
+
+
+def _has_challenge_keyword(*parts: str) -> bool:
+    text = " ".join((p or "") for p in parts).lower()
+    return any(kw in text for kw in CHALLENGE_EVENT_KEYWORDS)
+
+
+def _is_challenge_event(event_details: dict, play_event: dict, play: dict) -> bool:
     """
     Check if a play event contains a challenge or ABS review.
 
@@ -74,14 +95,30 @@ def _is_challenge_event(event_details: dict) -> bool:
     2. The challenge is embedded ON the pitch event itself via reviewDetails
        (common for 2026 ABS where the review is attached to the pitch)
     """
-    event = (event_details.get("event") or "").lower()
-    event_type = (event_details.get("eventType") or "").lower()
-    if any(kw in event or kw in event_type for kw in CHALLENGE_EVENT_KEYWORDS):
+    event = event_details.get("event") or ""
+    event_type = event_details.get("eventType") or ""
+    description = event_details.get("description") or ""
+
+    play_result = play.get("result", {})
+    if _has_challenge_keyword(
+        event,
+        event_type,
+        description,
+        play_event.get("description", ""),
+        play_result.get("event", ""),
+        play_result.get("eventType", ""),
+        play_result.get("description", ""),
+    ):
         return True
 
-    # Also catch challenges stored directly on the pitch via reviewDetails
-    review = event_details.get("reviewDetails")
-    if review and isinstance(review, dict) and review.get("reviewType"):
+    # Also catch challenges stored directly via reviewDetails in any location.
+    review = _extract_review_details(event_details, play_event, play)
+    if review.get("reviewType") or review.get("inProgress") is not None:
+        return True
+
+    # Extra hints observed in some feeds.
+    flags = play_event.get("flags", {})
+    if isinstance(flags, dict) and (flags.get("isChallenge") or flags.get("isReview")):
         return True
 
     return False
@@ -232,10 +269,10 @@ class MLBMonitor:
                     uid = f"{game_pk_str}_{at_bat_index}_{event_idx}"
 
                 details = play_event.get("details", {})
-                if not _is_challenge_event(details):
+                if not _is_challenge_event(details, play_event, play):
                     continue
 
-                review = details.get("reviewDetails", {})
+                review = _extract_review_details(details, play_event, play)
                 is_in_progress = review.get("inProgress", False)
                 is_overturned = review.get("isOverturned", None)
                 event_state = (
@@ -341,7 +378,11 @@ class MLBMonitor:
                     "review_type": review_type,
                     "is_in_progress": is_in_progress,
                     "is_overturned": is_overturned,
-                    "description": details.get("description", ""),
+                    "description": (
+                        details.get("description")
+                        or play_event.get("description")
+                        or play.get("result", {}).get("description", "")
+                    ),
                     "pitch_info": pitch_info,
                     "balls": count.get("balls", 0),
                     "strikes": count.get("strikes", 0),
