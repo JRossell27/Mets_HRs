@@ -1,17 +1,10 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 WORKDIR /app
-
-# Install system dependencies including ffmpeg for GIF creation
-RUN apt-get update && apt-get install -y \
-    ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+COPY bot.py mlb_monitor.py message_formatter.py ./
 
-EXPOSE 5000
-
-CMD ["python", "mets_dashboard.py"] 
+CMD ["python", "-u", "bot.py"]
