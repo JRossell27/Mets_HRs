@@ -123,6 +123,13 @@ def _is_challenge_event(event_details: dict, play_event: dict, play: dict) -> bo
     if review.get("reviewType") or review.get("inProgress") is not None:
         return True
 
+        return True
+
+    # Also catch challenges stored directly via reviewDetails in any location.
+    review = _extract_review_details(event_details, play_event, play)
+    if review.get("reviewType") or review.get("inProgress") is not None:
+        return True
+
     # Extra hints observed in some feeds.
     flags = play_event.get("flags", {})
     if isinstance(flags, dict) and (flags.get("isChallenge") or flags.get("isReview")):
