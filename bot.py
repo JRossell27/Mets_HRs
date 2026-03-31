@@ -19,6 +19,7 @@ import logging
 import os
 import sys
 from collections import defaultdict
+from aiohttp import web
 
 import discord
 from discord.ext import commands, tasks
@@ -214,11 +215,28 @@ async def help_bot(ctx):
     await ctx.send(help_text)
 
 
+# ─── Health check server (required by Fly.io) ────────────────────────────────
+async def health_check(request):
+    return web.Response(text="OK")
+
+async def start_health_server():
+    port = int(os.getenv("PORT", "8080"))
+    app = web.Application()
+    app.router.add_get("/", health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info("Health check server running on port %s", port)
+
 # ─── Entry point ─────────────────────────────────────────────────────────────
+async def main():
+    async with bot:
+        await start_health_server()
+        await bot.start(DISCORD_TOKEN)
+
 if __name__ == "__main__":
     try:
-        bot.run(DISCORD_TOKEN, log_handler=None)
+        asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Shutting down.")
-    finally:
-        asyncio.run(monitor.close())
