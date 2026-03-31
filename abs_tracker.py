@@ -29,6 +29,7 @@ DATA_FILE = _DATA_DIR / "abs_season_data.json"
 # Minimum challenges a player needs to appear in the leaderboard.
 MIN_CHALLENGES = 3
 CLASSIFIER_VERSION = 4
+CLASSIFIER_VERSION = 2
 
 
 class ABSSeasonTracker:
