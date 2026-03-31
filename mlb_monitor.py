@@ -65,10 +65,26 @@ ZONE_DESCRIPTIONS = {
 
 
 def _is_challenge_event(event_details: dict) -> bool:
-    """Check if a play event is a challenge."""
+    """
+    Check if a play event contains a challenge or ABS review.
+
+    Handles two layouts seen in the MLB Stats API:
+    1. A dedicated non-pitch event where details.event/eventType contains
+       a challenge keyword  (classic manager/ABS challenge)
+    2. The challenge is embedded ON the pitch event itself via reviewDetails
+       (common for 2026 ABS where the review is attached to the pitch)
+    """
     event = (event_details.get("event") or "").lower()
     event_type = (event_details.get("eventType") or "").lower()
-    return any(kw in event or kw in event_type for kw in CHALLENGE_EVENT_KEYWORDS)
+    if any(kw in event or kw in event_type for kw in CHALLENGE_EVENT_KEYWORDS):
+        return True
+
+    # Also catch challenges stored directly on the pitch via reviewDetails
+    review = event_details.get("reviewDetails")
+    if review and isinstance(review, dict) and review.get("reviewType"):
+        return True
+
+    return False
 
 
 class MLBMonitor:
@@ -234,12 +250,17 @@ class MLBMonitor:
                 else:
                     challenging_team = "Unknown Team"
 
-                # Find the most recent pitch in this at-bat for context
-                last_pitch = None
-                for pe in reversed(play_events[:event_idx]):
-                    if pe.get("isPitch", False):
-                        last_pitch = pe
-                        break
+                # Find pitch data.  If the challenge IS on the pitch event
+                # itself (2026 ABS style), use that event directly; otherwise
+                # search backwards for the most recent prior pitch.
+                if play_event.get("isPitch", False):
+                    last_pitch = play_event
+                else:
+                    last_pitch = None
+                    for pe in reversed(play_events[:event_idx]):
+                        if pe.get("isPitch", False):
+                            last_pitch = pe
+                            break
 
                 pitch_info = {}
                 if last_pitch:

@@ -292,21 +292,17 @@ class ABSSeasonTracker:
             (today - timedelta(days=1)).isoformat(),
         )
 
-        # Games that are still actively live — skip these to avoid fetching
-        # unnecessary feeds.  Everything else (final, postponed, cancelled,
-        # unknown) gets a feed fetch and then we verify from the feed itself.
-        live_status_codes = {"I", "IR", "IO", "MA", "MF", "S", "PW", "PR"}
-
         while current < today:
             date_str = current.strftime("%Y-%m-%d")
             games = await monitor.get_games_for_date(date_str)
             logger.info("Backfill %s: %d games found", date_str, len(games))
 
-            # Log a sample status so we can see what the API is returning
+            # Log the first game's raw status so we can see what the API
+            # returns — useful if games keep being skipped unexpectedly.
             if games:
-                sample = games[0].get("status", {})
                 logger.info(
-                    "Backfill %s sample status: %s", date_str, sample
+                    "Backfill %s sample game status: %s",
+                    date_str, games[0].get("status", {}),
                 )
 
             for game in games:
@@ -314,34 +310,27 @@ class ABSSeasonTracker:
                 if not game_pk or self.is_game_processed(game_pk):
                     continue
 
-                status = game.get("status", {})
-                status_code = status.get("statusCode", "")
-                abstract_state = status.get("abstractGameState", "")
-
-                # Skip games that are explicitly still live/upcoming
-                if status_code in live_status_codes or abstract_state in ("Live", "Preview"):
-                    logger.debug(
-                        "Skipping live/upcoming game %s (code=%s state=%s)",
-                        game_pk, status_code, abstract_state,
-                    )
-                    continue
-
+                # Since we only iterate over dates BEFORE today, every game
+                # on those dates is finished.  Fetch the feed directly without
+                # trusting schedule API status codes (they vary across API
+                # versions and caused all games to be skipped previously).
                 feed = await monitor.get_live_feed(game_pk)
                 if not feed:
-                    logger.warning("No feed returned for game %s", game_pk)
+                    logger.warning("No feed for game %s — skipping", game_pk)
                     continue
 
-                # Verify completion directly from the feed — this is the
-                # authoritative source and doesn't depend on schedule status codes
-                feed_state = (
-                    feed.get("gameData", {})
-                        .get("status", {})
-                        .get("abstractGameState", "")
+                # If there are no plays the game was postponed/cancelled.
+                all_plays = (
+                    feed.get("liveData", {})
+                        .get("plays", {})
+                        .get("allPlays", [])
                 )
-                if feed_state and feed_state != "Final":
+                if not all_plays:
                     logger.debug(
-                        "Game %s feed state=%s, skipping", game_pk, feed_state
+                        "Game %s has no plays (postponed/cancelled) — marking processed",
+                        game_pk,
                     )
+                    self.mark_game_processed(game_pk)
                     continue
 
                 games_scanned += 1
