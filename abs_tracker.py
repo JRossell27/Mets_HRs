@@ -54,6 +54,8 @@ class ABSSeasonTracker:
             "players": {},
             # game PKs (as strings) we have already fully processed
             "processed_game_pks": [],
+            # unique challenge IDs already recorded in season totals
+            "recorded_challenge_uids": [],
             # dates (YYYY-MM-DD) for which the daily recap has been posted
             "daily_recap_posted": [],
         }
@@ -88,6 +90,9 @@ class ABSSeasonTracker:
         explicitly non-pitch review types (manager/replay challenges).
         """
         uid = challenge.get("uid", "?")
+        if uid in self.data.get("recorded_challenge_uids", []):
+            logger.debug("Skipping duplicate already-recorded challenge uid=%s", uid)
+            return False
 
         if challenge.get("is_in_progress"):
             logger.debug("Skipping in-progress challenge uid=%s", uid)
@@ -145,6 +150,7 @@ class ABSSeasonTracker:
 
         p["team"] = team  # update to most recent team (trades, etc.)
         self.data["last_updated"] = datetime.now(EASTERN).isoformat()
+        self.data.setdefault("recorded_challenge_uids", []).append(uid)
         self._save()
         return True
 
