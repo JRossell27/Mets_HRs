@@ -1,0 +1,16 @@
+# fly.toml — Fly.io deployment config for MLB Pitch Challenge Bot
+# Run `fly launch` to create your app, then `fly deploy` to deploy.
+
+app = "mlb-pitch-challenge-bot"  # change this to your app name after fly launch
+primary_region = "ewr"           # ewr = Newark (closest to MLB data centers)
+
+[build]
+
+[env]
+  POLL_INTERVAL = "30"
+  LOG_LEVEL = "INFO"
+
+# No HTTP service needed — this is a pure background worker
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
