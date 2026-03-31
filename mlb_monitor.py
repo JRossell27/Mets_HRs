@@ -92,8 +92,9 @@ class MLBMonitor:
 
     def __init__(self):
         self._session: Optional[aiohttp.ClientSession] = None
-        # {game_pk: {event_uid: challenge_data}}
-        self._seen_challenges: dict[int, set[str]] = {}
+        # {game_pk: {event_uid: state}}
+        # state values: "in_progress", "resolved_overturned", "resolved_upheld", "resolved_unknown"
+        self._seen_challenges: dict[int, dict[str, str]] = {}
         # {game_pk: bool} — tracks which games we are actively watching
         self._active_games: dict[int, bool] = {}
 
@@ -179,19 +180,21 @@ class MLBMonitor:
         Extract all challenge events from a completed game feed without
         modifying the live-tracking seen-challenge state.  Used for backfill.
         """
-        original = self._seen_challenges.get(game_pk, set()).copy()
-        self._seen_challenges[game_pk] = set()
-        challenges = self._extract_challenges_from_feed(feed, game_pk)
+        original = self._seen_challenges.get(game_pk, {}).copy()
+        self._seen_challenges[game_pk] = {}
+        challenges = self._extract_challenges_from_feed(feed, game_pk, emit_updates_only=False)
         self._seen_challenges[game_pk] = original
         return challenges
 
-    def _extract_challenges_from_feed(self, feed: dict, game_pk: int) -> list[dict]:
+    def _extract_challenges_from_feed(
+        self, feed: dict, game_pk: int, emit_updates_only: bool = True
+    ) -> list[dict]:
         """
         Walk the live feed and return any new challenge events not yet seen.
         Returns fully enriched challenge dicts ready for formatting.
         """
         if game_pk not in self._seen_challenges:
-            self._seen_challenges[game_pk] = set()
+            self._seen_challenges[game_pk] = {}
 
         game_data = feed.get("gameData", {})
         live_data = feed.get("liveData", {})
@@ -222,20 +225,35 @@ class MLBMonitor:
 
             for event_idx, play_event in enumerate(play_events):
                 # Unique ID for this event
-                uid = f"{game_pk_str}_{at_bat_index}_{event_idx}"
-                if uid in self._seen_challenges[game_pk]:
-                    continue
+                event_play_id = play_event.get("playId")
+                if event_play_id:
+                    uid = f"{game_pk_str}_{event_play_id}"
+                else:
+                    uid = f"{game_pk_str}_{at_bat_index}_{event_idx}"
 
                 details = play_event.get("details", {})
                 if not _is_challenge_event(details):
                     continue
 
-                # Mark as seen regardless of inProgress status
-                self._seen_challenges[game_pk].add(uid)
-
                 review = details.get("reviewDetails", {})
                 is_in_progress = review.get("inProgress", False)
                 is_overturned = review.get("isOverturned", None)
+                event_state = (
+                    "in_progress"
+                    if is_in_progress
+                    else (
+                        "resolved_overturned"
+                        if is_overturned is True
+                        else "resolved_upheld" if is_overturned is False else "resolved_unknown"
+                    )
+                )
+
+                previous_state = self._seen_challenges[game_pk].get(uid)
+                self._seen_challenges[game_pk][uid] = event_state
+
+                if emit_updates_only and previous_state == event_state:
+                    continue
+
                 review_type_raw = review.get("reviewType", "")
                 review_type = REVIEW_TYPE_LABELS.get(review_type_raw, review_type_raw or "Challenge")
                 challenging_team_id = review.get("challengeTeamId")
