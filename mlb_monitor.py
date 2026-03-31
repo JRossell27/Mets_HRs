@@ -128,6 +128,45 @@ def _is_challenge_event(event_details: dict, play_event: dict, play: dict) -> bo
     if isinstance(flags, dict) and (flags.get("isChallenge") or flags.get("isReview")):
         return True
 
+    return False
+
+
+def _is_abs_pitch_challenge(
+    review_type_raw: str, details: dict, play_event: dict, play: dict, pitch_info: dict
+) -> bool:
+    """
+    Strict ABS challenge classifier used for season stat recording.
+    """
+    rt = (review_type_raw or "").lower()
+    if rt == "pitchchallenge":
+        return True
+
+    text = " ".join([
+        str(details.get("event", "")),
+        str(details.get("eventType", "")),
+        str(details.get("description", "")),
+        str(play_event.get("description", "")),
+        str(play.get("result", {}).get("event", "")),
+        str(play.get("result", {}).get("eventType", "")),
+        str(play.get("result", {}).get("description", "")),
+    ]).lower()
+
+    # MLB ABS narration format example:
+    # "Francisco Alvarez challenged ... call on the field was overturned..."
+    abs_text_markers = (
+        "challenged" in text
+        and "call on the field was" in text
+        and any(k in text for k in ("overturned", "upheld", "stands"))
+        and any(k in text for k in ("called strike", "called ball", "strikes", "balls"))
+    )
+    if abs_text_markers and "manager challenge" not in text and "replay review" not in text:
+        return True
+
+    # Extra hints observed in some feeds.
+    flags = play_event.get("flags", {})
+    if isinstance(flags, dict) and (flags.get("isChallenge") or flags.get("isReview")):
+        return True
+
     # Do not accept generic "challenge/review" events as ABS by fallback.
     return False
 
@@ -325,6 +364,20 @@ class MLBMonitor:
                     continue
 
                 review = _extract_review_details(details, play_event, play)
+                description_text = " ".join([
+                    str(details.get("description", "")),
+                    str(play_event.get("description", "")),
+                    str(play.get("result", {}).get("description", "")),
+                ]).lower()
+                is_in_progress = review.get("inProgress", False)
+                is_overturned = review.get("isOverturned", None)
+                if is_overturned is None:
+                    if "overturned" in description_text:
+                        is_overturned = True
+                    elif any(k in description_text for k in ("upheld", "stands")):
+                        is_overturned = False
+                if not is_in_progress and "in progress" in description_text:
+                    is_in_progress = True
                 is_in_progress = review.get("inProgress", False)
                 is_overturned = review.get("isOverturned", None)
                 event_state = (
