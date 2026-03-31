@@ -26,6 +26,13 @@ CHALLENGE_EVENT_KEYWORDS = [
     "video review",
 ]
 
+# Keywords that strongly indicate ABS pitch challenges (not generic replay).
+ABS_EVENT_KEYWORDS = [
+    "pitch challenge",
+    "abs challenge",
+    "automated ball-strike",
+]
+
 # Review types mapped to human-readable labels
 REVIEW_TYPE_LABELS = {
     "pitchChallenge": "Pitch Challenge (ABS)",
@@ -116,10 +123,51 @@ def _is_challenge_event(event_details: dict, play_event: dict, play: dict) -> bo
     if review.get("reviewType") or review.get("inProgress") is not None:
         return True
 
+        return True
+
+    # Also catch challenges stored directly via reviewDetails in any location.
+    review = _extract_review_details(event_details, play_event, play)
+    if review.get("reviewType") or review.get("inProgress") is not None:
+        return True
+
     # Extra hints observed in some feeds.
     flags = play_event.get("flags", {})
     if isinstance(flags, dict) and (flags.get("isChallenge") or flags.get("isReview")):
         return True
+
+    return False
+
+
+def _is_abs_pitch_challenge(
+    review_type_raw: str, details: dict, play_event: dict, play: dict, pitch_info: dict
+) -> bool:
+    """
+    Strict ABS challenge classifier used for season stat recording.
+    """
+    rt = (review_type_raw or "").lower()
+    if rt == "pitchchallenge":
+        return True
+
+    if rt in {"managerchallenge", "replayreview", "umpirereview"}:
+        return False
+
+    text = " ".join([
+        str(details.get("event", "")),
+        str(details.get("eventType", "")),
+        str(details.get("description", "")),
+        str(play_event.get("description", "")),
+        str(play.get("result", {}).get("event", "")),
+        str(play.get("result", {}).get("eventType", "")),
+        str(play.get("result", {}).get("description", "")),
+    ]).lower()
+
+    if any(k in text for k in ABS_EVENT_KEYWORDS):
+        return True
+
+    # Fallback: ball/strike call challenged on a concrete pitch.
+    original_call = (pitch_info.get("original_call", "") or "").lower()
+    if pitch_info and ("strike" in original_call or "ball" in original_call):
+        return "challenge" in text
 
     return False
 
@@ -390,6 +438,9 @@ class MLBMonitor:
                     "event_time": event_time,
                     "challenger_name": challenger_name,
                     "challenger_role": challenger_role,
+                    "is_abs_pitch_challenge": _is_abs_pitch_challenge(
+                        review_type_raw, details, play_event, play, pitch_info
+                    ),
                 }
                 new_challenges.append(challenge)
 

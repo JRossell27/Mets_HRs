@@ -124,11 +124,17 @@ class ABSSeasonTracker:
             return False
 
         # Block explicitly non-ABS types; accept anything else that triggered
-        # challenge detection (covers empty/unknown review_type values too).
+        # challenge detection only if explicitly classified as ABS pitch review.
         review_type = challenge.get("review_type", "")
         non_abs_types = ("Manager Challenge", "Replay Review", "Umpire Review")
         if any(t in review_type for t in non_abs_types):
             logger.debug("Skipping non-ABS challenge type=%s uid=%s", review_type, uid)
+            return False
+        if not challenge.get("is_abs_pitch_challenge", False):
+            logger.debug(
+                "Skipping non-ABS/ambiguous challenge uid=%s review_type=%s",
+                uid, review_type,
+            )
             return False
 
         challenger_name = challenge.get("challenger_name", "").strip()
@@ -199,14 +205,6 @@ class ABSSeasonTracker:
     def generate_daily_recap(self) -> str:
         """
         Build the daily ABS season-tracker Discord message.
-
-        Sections:
-          • Season overview (totals + overall overturn rate)
-          • Top Batters  — batting-team challenges
-          • Top Catchers — fielding-team challenges credited to the catcher
-          • Top Pitchers — fielding-team challenges credited to the pitcher
-            (when catcher name is unavailable from the API)
-          • Overall Leaderboard (all roles combined)
         """
         today_str = datetime.now(EASTERN).strftime("%B %d, %Y")
         players = self.data["players"]
@@ -234,19 +232,17 @@ class ABSSeasonTracker:
                 n: s for n, s in players.items()
                 if s["role"] == role and s["challenges"] >= MIN_CHALLENGES
             }
-            return sorted(qual.items(), key=sort_key)[:10]
+            return sorted(qual.items(), key=sort_key)[:3]
 
-        top_batters  = ranked("batter")
-        top_catchers = ranked("catcher")
-        top_pitchers = ranked("pitcher")
-
-        all_qual = {
-            n: s for n, s in players.items() if s["challenges"] >= MIN_CHALLENGES
+        top_batters = ranked("batter")
+        fielders_qual = {
+            n: s for n, s in players.items()
+            if s["role"] != "batter" and s["challenges"] >= MIN_CHALLENGES
         }
-        top_overall = sorted(all_qual.items(), key=sort_key)[:10]
+        top_fielders = sorted(fielders_qual.items(), key=sort_key)[:3]
 
         lines = [
-            f"## 📊 ABS Season Challenge Tracker — {today_str}",
+            f"## 📊 ABS Challenge Tracker — {today_str}",
             "",
             (
                 f"**2026 Season Totals** · "
@@ -266,32 +262,12 @@ class ABSSeasonTracker:
                 lines.append(f"*No {role_label} with {MIN_CHALLENGES}+ challenges yet.*")
             lines.append("")
 
-        section(
-            "Top Batters — ABS Challenge Success",
-            "🏏", top_batters, "batters",
-        )
-        section(
-            "Top Catchers — Defense Challenge Success",
-            "🧤", top_catchers, "catchers",
-        )
-        section(
-            "Top Pitchers — Defense Challenge Success",
-            "⚾", top_pitchers, "pitchers",
-        )
+        section("Top 3 Batters — Overturn Success", "🏏", top_batters, "batters")
+        section("Top 3 Fielders — Overturn Success", "🧤", top_fielders, "fielders")
 
-        lines.append("### 🏆 Overall Leaderboard")
-        role_emoji = {"batter": "🏏", "catcher": "🧤", "pitcher": "⚾"}
-        if top_overall:
-            for i, (name, s) in enumerate(top_overall, 1):
-                emoji = role_emoji.get(s["role"], "⚾")
-                lines.append(f"{emoji} " + player_row(i, name, s))
-        else:
-            lines.append(f"*No players with {MIN_CHALLENGES}+ challenges yet.*")
-
-        lines.append("")
         lines.append(
             f"*Min. {MIN_CHALLENGES} challenges to qualify · "
-            f"2026 MLB Season · Updated after final game each day*"
+            f"Fielders include catcher/pitcher defensive challenges*"
         )
         return "\n".join(lines)
 
