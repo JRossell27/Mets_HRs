@@ -231,8 +231,8 @@ async def start_health_server():
 
 # ─── Entry point ─────────────────────────────────────────────────────────────
 async def main():
+    asyncio.create_task(start_health_server())
     async with bot:
-        await start_health_server()
         await bot.start(DISCORD_TOKEN)
 
 if __name__ == "__main__":
