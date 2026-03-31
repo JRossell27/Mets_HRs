@@ -104,6 +104,46 @@ def _enrich_with_season_stats(challenge: dict) -> dict:
     return challenge
 
 
+async def _send_chunked_message(target, text: str, limit: int = 1900) -> int:
+    """
+    Send long Discord content in multiple messages to avoid 2000-char limit.
+    Splits on line boundaries when possible.
+    Returns the number of messages sent.
+    """
+    if len(text) <= limit:
+        await target.send(text)
+        return 1
+
+    sent = 0
+    chunk = ""
+    for line in text.splitlines(keepends=True):
+        # If an individual line is longer than limit, hard-split it.
+        if len(line) > limit:
+            if chunk:
+                await target.send(chunk)
+                sent += 1
+                chunk = ""
+            start = 0
+            while start < len(line):
+                await target.send(line[start:start + limit])
+                sent += 1
+                start += limit
+            continue
+
+        if len(chunk) + len(line) > limit:
+            await target.send(chunk.rstrip("\n"))
+            sent += 1
+            chunk = line
+        else:
+            chunk += line
+
+    if chunk:
+        await target.send(chunk.rstrip("\n"))
+        sent += 1
+
+    return sent
+
+
 # ─── Background polling task ─────────────────────────────────────────────────
 @tasks.loop(seconds=POLL_INTERVAL)
 async def poll_mlb():
@@ -156,9 +196,9 @@ async def poll_mlb():
             games = await monitor.get_todays_games()
             if _all_games_final(games):
                 recap = tracker.generate_daily_recap()
-                await channel.send(recap)
+                parts = await _send_chunked_message(channel, recap)
                 tracker.mark_recap_posted(today_str)
-                logger.info("Posted ABS daily recap for %s", today_str)
+                logger.info("Posted ABS daily recap for %s in %d message(s)", today_str, parts)
         except Exception as exc:
             logger.error("Failed to post daily recap: %s", exc)
 
@@ -231,7 +271,7 @@ async def status(ctx):
 async def abs_stats(ctx):
     """Post the current ABS season challenge leaderboard."""
     recap = tracker.generate_daily_recap()
-    await ctx.send(recap)
+    await _send_chunked_message(ctx, recap)
 
 
 @bot.command(name="testchallenge")
@@ -656,9 +696,12 @@ async def _api_post_recap(request):
         if channel is None:
             raise RuntimeError("Bot channel not found — is the bot connected?")
         recap = tracker.generate_daily_recap()
-        await channel.send(recap)
+        parts = await _send_chunked_message(channel, recap)
         return web.Response(
-            text=json.dumps({"ok": True, "message": "✅ Season recap posted to Discord."}),
+            text=json.dumps({
+                "ok": True,
+                "message": f"✅ Season recap posted to Discord in {parts} message(s).",
+            }),
             content_type="application/json",
         )
     except Exception as exc:
