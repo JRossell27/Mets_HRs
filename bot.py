@@ -321,12 +321,37 @@ async def diag_date(ctx, date_str: str = ""):
     await ctx.send(f"{len(final_games)} game(s) considered final — fetching feeds…")
 
     total_challenges = []
+    total_candidates = 0
     for g in final_games:
         game_pk = g.get("gamePk")
         feed = await monitor.get_live_feed(game_pk)
         if not feed:
             await ctx.send(f"  `{game_pk}`: no feed returned")
             continue
+
+        all_plays = feed.get("liveData", {}).get("plays", {}).get("allPlays", [])
+        candidate_hits = 0
+        for p in all_plays:
+            result = p.get("result", {})
+            result_txt = " ".join(
+                str(result.get(k, "")) for k in ("event", "eventType", "description")
+            ).lower()
+            if any(k in result_txt for k in ("challenge", "review", "overturned", "upheld")):
+                candidate_hits += 1
+
+            for e in p.get("playEvents", []):
+                d = e.get("details", {})
+                det_txt = " ".join(
+                    str(d.get(k, "")) for k in ("event", "eventType", "description")
+                ).lower()
+                if (
+                    any(k in det_txt for k in ("challenge", "review", "overturned", "upheld"))
+                    or d.get("reviewDetails")
+                    or e.get("reviewDetails")
+                ):
+                    candidate_hits += 1
+        total_candidates += candidate_hits
+
         challenges = monitor.extract_all_challenges_from_feed(feed, game_pk)
         total_challenges.extend(challenges)
         if challenges:
@@ -340,11 +365,15 @@ async def diag_date(ctx, date_str: str = ""):
                     f"role=`{ch.get('challenger_role')}`"
                 )
         else:
-            await ctx.send(f"  `{game_pk}`: 0 challenge events detected")
+            await ctx.send(
+                f"  `{game_pk}`: 0 challenge events detected "
+                f"(keyword/review candidates: {candidate_hits})"
+            )
 
     await ctx.send(
         f"**Total: {len(total_challenges)} challenge event(s) across "
-        f"{len(final_games)} final game(s) on {date_str}**"
+        f"{len(final_games)} final game(s) on {date_str}. "
+        f"Raw keyword/review candidates: {total_candidates}**"
     )
 
 

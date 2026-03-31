@@ -36,6 +36,7 @@ class ABSSeasonTracker:
     def __init__(self, data_file: Path = DATA_FILE):
         self.data_file = data_file
         self.data = self._load()
+        self._normalize_data_schema()
 
     # ── Persistence ──────────────────────────────────────────────────────────
 
@@ -54,6 +55,8 @@ class ABSSeasonTracker:
             "players": {},
             # game PKs (as strings) we have already fully processed
             "processed_game_pks": [],
+            # unique challenge IDs already recorded in season totals
+            "recorded_challenge_uids": [],
             # dates (YYYY-MM-DD) for which the daily recap has been posted
             "daily_recap_posted": [],
         }
@@ -65,6 +68,22 @@ class ABSSeasonTracker:
                 json.dump(self.data, f, indent=2)
         except Exception as exc:
             logger.error("Failed to save ABS tracker data: %s", exc)
+
+    def _normalize_data_schema(self):
+        """
+        Ensure persisted data has expected keys/types after upgrades.
+        """
+        self.data.setdefault("processed_game_pks", [])
+        self.data.setdefault("daily_recap_posted", [])
+        self.data.setdefault("players", {})
+        self.data.setdefault("recorded_challenge_uids", [])
+
+        # Backward/forward compatibility: support list or dict.
+        recorded = self.data.get("recorded_challenge_uids")
+        if isinstance(recorded, dict):
+            self.data["recorded_challenge_uids"] = list(recorded.keys())
+        elif not isinstance(recorded, list):
+            self.data["recorded_challenge_uids"] = []
 
     # ── Game processing state ────────────────────────────────────────────────
 
@@ -88,6 +107,10 @@ class ABSSeasonTracker:
         explicitly non-pitch review types (manager/replay challenges).
         """
         uid = challenge.get("uid", "?")
+        recorded_uids = set(self.data.get("recorded_challenge_uids", []))
+        if uid in recorded_uids:
+            logger.debug("Skipping duplicate already-recorded challenge uid=%s", uid)
+            return False
 
         if challenge.get("is_in_progress"):
             logger.debug("Skipping in-progress challenge uid=%s", uid)
@@ -145,6 +168,7 @@ class ABSSeasonTracker:
 
         p["team"] = team  # update to most recent team (trades, etc.)
         self.data["last_updated"] = datetime.now(EASTERN).isoformat()
+        self.data.setdefault("recorded_challenge_uids", []).append(uid)
         self._save()
         return True
 
