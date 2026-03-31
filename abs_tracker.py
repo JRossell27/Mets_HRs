@@ -292,37 +292,56 @@ class ABSSeasonTracker:
             (today - timedelta(days=1)).isoformat(),
         )
 
-        # A game is "done" if its abstract state is Final OR its status code
-        # is in the known-final set.  Using both avoids missing edge cases.
-        final_status_codes = {"F", "FT", "FO", "O", "C", "CR"}
+        # Games that are still actively live — skip these to avoid fetching
+        # unnecessary feeds.  Everything else (final, postponed, cancelled,
+        # unknown) gets a feed fetch and then we verify from the feed itself.
+        live_status_codes = {"I", "IR", "IO", "MA", "MF", "S", "PW", "PR"}
 
         while current < today:
             date_str = current.strftime("%Y-%m-%d")
             games = await monitor.get_games_for_date(date_str)
             logger.info("Backfill %s: %d games found", date_str, len(games))
 
+            # Log a sample status so we can see what the API is returning
+            if games:
+                sample = games[0].get("status", {})
+                logger.info(
+                    "Backfill %s sample status: %s", date_str, sample
+                )
+
             for game in games:
+                game_pk = game.get("gamePk")
+                if not game_pk or self.is_game_processed(game_pk):
+                    continue
+
                 status = game.get("status", {})
                 status_code = status.get("statusCode", "")
                 abstract_state = status.get("abstractGameState", "")
-                is_final = (
-                    abstract_state == "Final"
-                    or status_code in final_status_codes
-                )
-                if not is_final:
-                    logger.debug(
-                        "Skipping game %s — not final (statusCode=%s abstractState=%s)",
-                        game.get("gamePk"), status_code, abstract_state,
-                    )
-                    continue
 
-                game_pk = game.get("gamePk")
-                if not game_pk or self.is_game_processed(game_pk):
+                # Skip games that are explicitly still live/upcoming
+                if status_code in live_status_codes or abstract_state in ("Live", "Preview"):
+                    logger.debug(
+                        "Skipping live/upcoming game %s (code=%s state=%s)",
+                        game_pk, status_code, abstract_state,
+                    )
                     continue
 
                 feed = await monitor.get_live_feed(game_pk)
                 if not feed:
                     logger.warning("No feed returned for game %s", game_pk)
+                    continue
+
+                # Verify completion directly from the feed — this is the
+                # authoritative source and doesn't depend on schedule status codes
+                feed_state = (
+                    feed.get("gameData", {})
+                        .get("status", {})
+                        .get("abstractGameState", "")
+                )
+                if feed_state and feed_state != "Final":
+                    logger.debug(
+                        "Game %s feed state=%s, skipping", game_pk, feed_state
+                    )
                     continue
 
                 games_scanned += 1
