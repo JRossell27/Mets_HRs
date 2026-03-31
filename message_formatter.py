@@ -59,6 +59,22 @@ def _hashtags(away_abbr: str, home_abbr: str) -> str:
     return " ".join(tags)
 
 
+def _challenger_stat_line(challenge: dict) -> str:
+    """
+    Build a one-line season success rate string for the challenging player.
+    Returns '' if stats are not yet available (e.g. in-progress challenges).
+    """
+    stats = challenge.get("challenger_season_stats")
+    if not stats or stats.get("challenges", 0) == 0:
+        return ""
+    name = challenge.get("challenger_name", "")
+    role = stats.get("role", challenge.get("challenger_role", "")).title()
+    challenges = stats["challenges"]
+    overturned = stats["overturned"]
+    pct = overturned / challenges * 100
+    return f"📊 {name} ({role}) 2026: {pct:.1f}% ({overturned}/{challenges} overturned)"
+
+
 def format_challenge_message(challenge: dict) -> str:
     """
     Build a full Discord message with a Twitter-ready block.
@@ -89,6 +105,7 @@ def format_challenge_message(challenge: dict) -> str:
     score_str = f"{away} {away_score} — {home_score} {home}"
     inning_str = f"{half} {inning}"
     count_str = f"{balls}-{strikes}, {outs} out{'s' if outs != 1 else ''}"
+    stat_line = _challenger_stat_line(challenge)
 
     # Twitter-optimized text block (inside a code block for easy copy)
     twitter_text = (
@@ -100,6 +117,9 @@ def format_challenge_message(challenge: dict) -> str:
         f"📍 {pitch_line}\n"
         f"📢 Challenged by: {challenging_team}\n"
     )
+
+    if stat_line:
+        twitter_text += f"{stat_line}\n"
 
     if description:
         twitter_text += f"📋 {description}\n"
