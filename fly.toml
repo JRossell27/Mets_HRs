@@ -1,0 +1,12 @@
+app = "mets-hrs"
+primary_region = "ewr"
+
+[build]
+
+[env]
+  POLL_INTERVAL = "30"
+  LOG_LEVEL = "INFO"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
