@@ -128,6 +128,7 @@ def _is_challenge_event(event_details: dict, play_event: dict, play: dict) -> bo
     if isinstance(flags, dict) and (flags.get("isChallenge") or flags.get("isReview")):
         return True
 
+    # Do not accept generic "challenge/review" events as ABS by fallback.
     return False
 
 

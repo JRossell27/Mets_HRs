@@ -28,6 +28,7 @@ DATA_FILE = _DATA_DIR / "abs_season_data.json"
 
 # Minimum challenges a player needs to appear in the leaderboard.
 MIN_CHALLENGES = 3
+CLASSIFIER_VERSION = 2
 
 
 class ABSSeasonTracker:
@@ -50,6 +51,7 @@ class ABSSeasonTracker:
         return {
             "season_year": 2026,
             "season_start": "2026-03-25",
+            "classifier_version": CLASSIFIER_VERSION,
             "last_updated": None,
             # player_name -> {role, team, challenges, overturned, upheld}
             "players": {},
@@ -77,6 +79,7 @@ class ABSSeasonTracker:
         self.data.setdefault("daily_recap_posted", [])
         self.data.setdefault("players", {})
         self.data.setdefault("recorded_challenge_uids", [])
+        self.data.setdefault("classifier_version", 1)
 
         # Backward/forward compatibility: support list or dict.
         recorded = self.data.get("recorded_challenge_uids")
@@ -84,6 +87,21 @@ class ABSSeasonTracker:
             self.data["recorded_challenge_uids"] = list(recorded.keys())
         elif not isinstance(recorded, list):
             self.data["recorded_challenge_uids"] = []
+
+        # If challenge-classification logic changed, rebuild stats from scratch
+        # on next backfill so persisted totals stay consistent with new filters.
+        if self.data.get("classifier_version", 1) < CLASSIFIER_VERSION:
+            logger.warning(
+                "Classifier version changed (%s -> %s). Resetting season aggregates for re-backfill.",
+                self.data.get("classifier_version", 1), CLASSIFIER_VERSION,
+            )
+            self.data["classifier_version"] = CLASSIFIER_VERSION
+            self.data["players"] = {}
+            self.data["recorded_challenge_uids"] = []
+            self.data["processed_game_pks"] = []
+            self.data["daily_recap_posted"] = []
+            self.data["last_updated"] = None
+            self._save()
 
     # ── Game processing state ────────────────────────────────────────────────
 
