@@ -1,0 +1,14 @@
+name: Deploy to Discloud
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: discloud/github-action@v2
+        with:
+          token: ${{ secrets.DISCLOUD_TOKEN }}
