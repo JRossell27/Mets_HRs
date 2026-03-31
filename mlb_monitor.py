@@ -166,6 +166,16 @@ def _is_abs_pitch_challenge(
     return False
 
 
+def _is_abs_pitch_challenge(
+    review_type_raw: str, details: dict, play_event: dict, play: dict, pitch_info: dict
+) -> bool:
+    """
+    Strict ABS challenge classifier used for season stat recording.
+    """
+    rt = (review_type_raw or "").lower()
+    return rt == "pitchchallenge"
+
+
 class MLBMonitor:
     """Polls MLB live game feeds and surfaces new pitch challenge events."""
 
