@@ -20,6 +20,7 @@ Optional:
 """
 
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -301,19 +302,295 @@ async def help_bot(ctx):
     await ctx.send(help_text)
 
 
-# ─── Health check server (required by Fly.io) ────────────────────────────────
-async def health_check(request):
-    return web.Response(text="OK")
+# ─── Web test panel ──────────────────────────────────────────────────────────
+
+_HTML_PANEL = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MLB Bot — Test Panel</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0d1117; color: #e6edf3;
+      min-height: 100vh; padding: 2rem 1rem;
+    }
+    .container { max-width: 760px; margin: 0 auto; }
+    h1 { font-size: 1.4rem; font-weight: 700; margin-bottom: 1.5rem; }
+    h1 span { color: #58a6ff; }
+    h2 { font-size: 0.7rem; font-weight: 600; color: #8b949e;
+         text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.75rem; }
+    .card {
+      background: #161b22; border: 1px solid #30363d;
+      border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem;
+    }
+    .status-row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.6rem; }
+    .badge {
+      background: #21262d; border: 1px solid #30363d;
+      border-radius: 4px; padding: 0.3rem 0.6rem;
+      font-size: 0.78rem; white-space: nowrap;
+    }
+    .dot { display: inline-block; width: 8px; height: 8px;
+           border-radius: 50%; margin-right: 6px; background: #3fb950; }
+    .actions { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+    .btn {
+      padding: 0.5rem 1.1rem; border: none; border-radius: 6px;
+      font-size: 0.875rem; font-weight: 600; cursor: pointer;
+      transition: filter 0.15s;
+    }
+    .btn:hover:not(:disabled) { filter: brightness(1.15); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-blue   { background: #1f6feb; color: #fff; }
+    .btn-green  { background: #238636; color: #fff; }
+    .btn-orange { background: #9e6a03; color: #fff; }
+    .btn-purple { background: #6e40c9; color: #fff; }
+    .output {
+      background: #010409; border: 1px solid #30363d; border-radius: 6px;
+      padding: 1rem; font-family: "SF Mono", Consolas, monospace;
+      font-size: 0.78rem; white-space: pre-wrap; word-break: break-word;
+      max-height: 420px; overflow-y: auto; min-height: 72px;
+      color: #7ee787; line-height: 1.55;
+    }
+    .spinner {
+      display: inline-block; width: 12px; height: 12px;
+      border: 2px solid #8b949e; border-top-color: #58a6ff;
+      border-radius: 50%; animation: spin 0.7s linear infinite;
+      margin-right: 6px; vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .err { color: #f85149; }
+    .ok  { color: #7ee787; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>⚾ MLB Pitch Challenge Bot — <span>Test Panel</span></h1>
+
+  <div class="card" id="status-card">
+    <h2>Bot Status</h2>
+    <p><span class="dot"></span>Loading…</p>
+  </div>
+
+  <div class="card">
+    <h2>Actions</h2>
+    <div class="actions">
+      <button class="btn btn-blue"   onclick="run('test-challenge')">📨 Send Test Challenge</button>
+      <button class="btn btn-green"  onclick="run('post-recap')">📊 Post Season Recap</button>
+      <button class="btn btn-orange" onclick="run('run-backfill')">🔄 Run Season Backfill</button>
+      <button class="btn btn-purple" onclick="loadStatus()">↺ Refresh Status</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Output</h2>
+    <div class="output" id="output">Click an action above…</div>
+  </div>
+</div>
+
+<script>
+async function loadStatus() {
+  const card = document.getElementById('status-card');
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    const recapLabel = d.recap_posted_today ? '✅ Yes' : '❌ Not yet';
+    card.innerHTML = `
+      <h2>Bot Status</h2>
+      <p><span class="dot"></span><strong>Online</strong> — polling every ${d.poll_interval}s</p>
+      <div class="status-row">
+        <span class="badge">📅 ${d.today}</span>
+        <span class="badge">🎮 Live games: ${d.live_games}</span>
+        <span class="badge">📊 Season challenges: ${d.total_challenges}</span>
+        <span class="badge">✅ Overturned: ${d.total_overturned}</span>
+        <span class="badge">📈 Success rate: ${d.overall_pct}%</span>
+        <span class="badge">🏏 Batters tracked: ${d.batters_tracked}</span>
+        <span class="badge">🧤 Catchers tracked: ${d.catchers_tracked}</span>
+        <span class="badge">⚾ Pitchers tracked: ${d.pitchers_tracked}</span>
+        <span class="badge">📋 Recap posted today: ${recapLabel}</span>
+      </div>`;
+  } catch (e) {
+    card.innerHTML = '<h2>Bot Status</h2><p class="err">Could not reach API.</p>';
+  }
+}
+
+async function run(action) {
+  const out = document.getElementById('output');
+  out.className = 'output';
+  out.innerHTML = '<span class="spinner"></span>Running ' + action + '…';
+  document.querySelectorAll('.btn').forEach(b => b.disabled = true);
+  try {
+    const r = await fetch('/api/' + action, { method: 'POST' });
+    const d = await r.json();
+    out.textContent = d.message || JSON.stringify(d, null, 2);
+    out.className = d.ok ? 'output ok' : 'output err';
+    loadStatus();
+  } catch (e) {
+    out.textContent = 'Error: ' + e.message;
+    out.className = 'output err';
+  } finally {
+    document.querySelectorAll('.btn').forEach(b => b.disabled = false);
+  }
+}
+
+loadStatus();
+</script>
+</body>
+</html>"""
+
+
+async def _panel(request):
+    return web.Response(text=_HTML_PANEL, content_type="text/html")
+
+
+async def _api_status(request):
+    try:
+        today_str = datetime.now(EASTERN).strftime("%Y-%m-%d")
+        games = await monitor.get_todays_games()
+        live_statuses = {"I", "IR", "IO", "MA", "MF"}
+        live_count = sum(
+            1 for g in games
+            if g.get("status", {}).get("statusCode") in live_statuses
+        )
+        players = tracker.data.get("players", {})
+        total_ch = sum(s["challenges"] for s in players.values())
+        total_ov = sum(s["overturned"] for s in players.values())
+        overall_pct = f"{total_ov / total_ch * 100:.1f}" if total_ch else "0.0"
+        return web.Response(
+            text=json.dumps({
+                "today": today_str,
+                "poll_interval": POLL_INTERVAL,
+                "live_games": live_count,
+                "total_challenges": total_ch,
+                "total_overturned": total_ov,
+                "overall_pct": overall_pct,
+                "batters_tracked":  sum(1 for s in players.values() if s["role"] == "batter"),
+                "catchers_tracked": sum(1 for s in players.values() if s["role"] == "catcher"),
+                "pitchers_tracked": sum(1 for s in players.values() if s["role"] == "pitcher"),
+                "recap_posted_today": tracker.has_posted_recap(today_str),
+            }),
+            content_type="application/json",
+        )
+    except Exception as exc:
+        return web.Response(
+            text=json.dumps({"ok": False, "message": str(exc)}),
+            content_type="application/json",
+            status=500,
+        )
+
+
+async def _api_test_challenge(request):
+    try:
+        channel = bot.get_channel(CHANNEL_ID)
+        if channel is None:
+            raise RuntimeError("Bot channel not found — is the bot connected?")
+        fake = {
+            "uid": "webtest_001",
+            "game_pk": 999999,
+            "game_pk_str": "999999",
+            "away_team": "Mets",
+            "home_team": "Yankees",
+            "away_abbr": "NYM",
+            "home_abbr": "NYY",
+            "away_score": 2,
+            "home_score": 3,
+            "venue": "Yankee Stadium",
+            "inning": 7,
+            "inning_half": "Top",
+            "pitcher": "Gerrit Cole",
+            "batter": "Francisco Lindor",
+            "challenger_name": "Francisco Lindor",
+            "challenger_role": "batter",
+            "challenging_team": "Mets",
+            "review_type": "Pitch Challenge (ABS)",
+            "is_in_progress": False,
+            "is_overturned": True,
+            "description": "Called strike overturned, ball awarded. [TEST]",
+            "pitch_info": {
+                "type": "4-Seam Fastball",
+                "type_code": "FF",
+                "speed": 97.4,
+                "zone": 3,
+                "zone_desc": "Up & Away",
+                "original_call": "Called Strike",
+            },
+            "balls": 1,
+            "strikes": 2,
+            "outs": 1,
+            "event_time": "",
+            "challenger_season_stats": {
+                "role": "batter",
+                "team": "NYM",
+                "challenges": 8,
+                "overturned": 5,
+                "upheld": 3,
+            },
+        }
+        msg = format_challenge_message(fake)
+        await channel.send(msg)
+        return web.Response(
+            text=json.dumps({"ok": True, "message": "✅ Test challenge posted to Discord."}),
+            content_type="application/json",
+        )
+    except Exception as exc:
+        return web.Response(
+            text=json.dumps({"ok": False, "message": f"❌ {exc}"}),
+            content_type="application/json",
+            status=500,
+        )
+
+
+async def _api_post_recap(request):
+    try:
+        channel = bot.get_channel(CHANNEL_ID)
+        if channel is None:
+            raise RuntimeError("Bot channel not found — is the bot connected?")
+        recap = tracker.generate_daily_recap()
+        await channel.send(recap)
+        return web.Response(
+            text=json.dumps({"ok": True, "message": "✅ Season recap posted to Discord."}),
+            content_type="application/json",
+        )
+    except Exception as exc:
+        return web.Response(
+            text=json.dumps({"ok": False, "message": f"❌ {exc}"}),
+            content_type="application/json",
+            status=500,
+        )
+
+
+async def _api_run_backfill(request):
+    try:
+        recorded = await tracker.backfill_season(monitor)
+        return web.Response(
+            text=json.dumps({
+                "ok": True,
+                "message": f"✅ Backfill complete — {recorded} new challenges recorded.",
+            }),
+            content_type="application/json",
+        )
+    except Exception as exc:
+        return web.Response(
+            text=json.dumps({"ok": False, "message": f"❌ {exc}"}),
+            content_type="application/json",
+            status=500,
+        )
+
 
 async def start_health_server():
     port = int(os.getenv("PORT", "8080"))
     app = web.Application()
-    app.router.add_get("/", health_check)
+    app.router.add_get("/",                  _panel)
+    app.router.add_get("/api/status",        _api_status)
+    app.router.add_post("/api/test-challenge", _api_test_challenge)
+    app.router.add_post("/api/post-recap",   _api_post_recap)
+    app.router.add_post("/api/run-backfill", _api_run_backfill)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logger.info("Health check server running on port %s", port)
+    logger.info("Web panel + health server running on port %s", port)
 
 # ─── Entry point ─────────────────────────────────────────────────────────────
 async def main():
