@@ -225,7 +225,11 @@ class MLBMonitor:
 
             for event_idx, play_event in enumerate(play_events):
                 # Unique ID for this event
-                uid = f"{game_pk_str}_{at_bat_index}_{event_idx}"
+                event_play_id = play_event.get("playId")
+                if event_play_id:
+                    uid = f"{game_pk_str}_{event_play_id}"
+                else:
+                    uid = f"{game_pk_str}_{at_bat_index}_{event_idx}"
 
                 details = play_event.get("details", {})
                 if not _is_challenge_event(details):

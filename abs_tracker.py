@@ -36,6 +36,7 @@ class ABSSeasonTracker:
     def __init__(self, data_file: Path = DATA_FILE):
         self.data_file = data_file
         self.data = self._load()
+        self._normalize_data_schema()
 
     # ── Persistence ──────────────────────────────────────────────────────────
 
@@ -68,6 +69,22 @@ class ABSSeasonTracker:
         except Exception as exc:
             logger.error("Failed to save ABS tracker data: %s", exc)
 
+    def _normalize_data_schema(self):
+        """
+        Ensure persisted data has expected keys/types after upgrades.
+        """
+        self.data.setdefault("processed_game_pks", [])
+        self.data.setdefault("daily_recap_posted", [])
+        self.data.setdefault("players", {})
+        self.data.setdefault("recorded_challenge_uids", [])
+
+        # Backward/forward compatibility: support list or dict.
+        recorded = self.data.get("recorded_challenge_uids")
+        if isinstance(recorded, dict):
+            self.data["recorded_challenge_uids"] = list(recorded.keys())
+        elif not isinstance(recorded, list):
+            self.data["recorded_challenge_uids"] = []
+
     # ── Game processing state ────────────────────────────────────────────────
 
     def is_game_processed(self, game_pk: int) -> bool:
@@ -90,7 +107,8 @@ class ABSSeasonTracker:
         explicitly non-pitch review types (manager/replay challenges).
         """
         uid = challenge.get("uid", "?")
-        if uid in self.data.get("recorded_challenge_uids", []):
+        recorded_uids = set(self.data.get("recorded_challenge_uids", []))
+        if uid in recorded_uids:
             logger.debug("Skipping duplicate already-recorded challenge uid=%s", uid)
             return False
 
