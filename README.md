@@ -1,36 +1,101 @@
-# Pete Alonso At-Bat Tracker
+# MLB Pitch Challenge Discord Bot
 
-This bot tracks Pete Alonso's at-bats and tweets the results, including detailed information about home runs and other outcomes.
+A Discord bot that monitors all MLB games in real-time and sends an alert whenever a pitch challenge (ABS system challenge or manager challenge) occurs. Each alert includes a pre-formatted Twitter/X-ready message you can copy and paste directly.
 
 ## Setup
 
-1. Clone this repository
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Create a `.env` file with the following variables:
-   ```
-   TWITTER_API_KEY=your_api_key
-   TWITTER_API_SECRET=your_api_secret
-   TWITTER_ACCESS_TOKEN=your_access_token
-   TWITTER_ACCESS_TOKEN_SECRET=your_access_token_secret
-   TWITTER_BEARER_TOKEN=your_bearer_token
-   ```
+### 1. Create a Discord Bot
 
-## Running Locally
+1. Go to https://discord.com/developers/applications
+2. Click **New Application**, give it a name
+3. Go to the **Bot** tab → click **Add Bot**
+4. Under **Token**, click **Copy** — this is your `DISCORD_TOKEN`
+5. Under **Privileged Gateway Intents**, enable **Message Content Intent**
+6. Go to **OAuth2 → URL Generator**
+   - Scopes: `bot`
+   - Bot Permissions: `Send Messages`, `Read Message History`, `View Channels`
+7. Copy the generated URL, paste it in your browser, and invite the bot to your server
+
+### 2. Get Your Channel ID
+
+1. In Discord, go to **User Settings → Advanced** and enable **Developer Mode**
+2. Right-click the channel you want alerts in → **Copy Channel ID**
+
+### 3. Configure Environment
 
 ```bash
-python alonso_tracker.py
+cp .env.example .env
+# Edit .env with your DISCORD_TOKEN and CHANNEL_ID
 ```
 
-## Deployment
+### 4. Install Dependencies
 
-This bot is designed to run on Render.com. The free tier will spin down with inactivity, but the bot includes a keep-alive mechanism to prevent this.
+```bash
+pip install -r requirements.txt
+```
 
-## Features
+### 5. Run the Bot
 
-- Tracks all of Pete Alonso's at-bats
-- Tweets detailed information about each at-bat
-- For home runs: includes exit velocity, distance, launch angle, and number of parks it would have been a home run in
-- For other outcomes: includes the result and relevant statistics 
+```bash
+python bot.py
+```
+
+The bot will start polling all live MLB games every 30 seconds.
+
+---
+
+## Commands
+
+| Command | Description |
+|---|---|
+| `!status` | Show today's MLB games and live monitoring status |
+| `!testchallenge` | (owner only) Send a test formatted challenge message |
+| `!help_bot` | Show available commands |
+
+---
+
+## What the Alerts Look Like
+
+When a pitch challenge happens, the bot posts a message like:
+
+```
+## ⚾ MLB Pitch Challenge (ABS) Detected!
+**✅ OVERTURNED**
+
+[Twitter-ready text block]:
+⚾ PITCH CHALLENGE (ABS)
+✅ OVERTURNED
+
+🏟 Mets 2 — 3 Yankees | Top 7
+⚡ Gerrit Cole → Francisco Lindor | 1-2, 1 out
+📍 4-Seam Fastball | 97.4 mph | Up & Away | called Called Strike
+📢 Challenged by: Mets
+📋 Called strike overturned, ball awarded.
+
+🏟 Yankee Stadium
+
+#LGM #RepBX #MLB
+```
+
+---
+
+## Environment Variables
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `DISCORD_TOKEN` | Yes | — | Discord bot token |
+| `CHANNEL_ID` | Yes | — | Channel to post alerts in |
+| `POLL_INTERVAL` | No | `30` | Seconds between MLB API polls |
+| `LOG_LEVEL` | No | `INFO` | Logging verbosity |
+
+---
+
+## How It Works
+
+1. Every `POLL_INTERVAL` seconds, the bot fetches today's MLB schedule
+2. For each live game, it pulls the full live game feed from the MLB Stats API
+3. It walks through every play event looking for challenge/review events
+4. When a new challenge is detected, it formats and posts an alert
+5. If a challenge was still in progress, the bot edits the message when the result is available
+
+The bot uses the free, public MLB Stats API (`statsapi.mlb.com`) — no API key required.

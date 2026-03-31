@@ -1,7 +1,4 @@
-tweepy==4.12.1
-python-dotenv==1.0.0
-requests==2.31.0
-flask==3.0.2
-pillow>=10.0.0
-ffmpeg-python>=0.2.0
-pytz>=2023.3 
+discord.py==2.3.2
+aiohttp==3.9.5
+python-dotenv==1.0.1
+pytz==2024.1

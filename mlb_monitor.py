@@ -1,0 +1,285 @@
+"""
+MLB API monitor for real-time pitch challenge detection.
+Polls the MLB Stats API live game feeds to detect pitch challenges and manager challenges.
+"""
+
+import asyncio
+import logging
+from datetime import datetime
+from typing import Optional
+
+import aiohttp
+import pytz
+
+logger = logging.getLogger(__name__)
+
+MLB_API_BASE = "https://statsapi.mlb.com/api"
+EASTERN = pytz.timezone("US/Eastern")
+
+# Event keywords that indicate a challenge
+CHALLENGE_EVENT_KEYWORDS = [
+    "pitch challenge",
+    "abs challenge",
+    "manager challenge",
+    "challenge",
+    "replay review",
+    "video review",
+]
+
+# Review types mapped to human-readable labels
+REVIEW_TYPE_LABELS = {
+    "pitchChallenge": "Pitch Challenge (ABS)",
+    "managerChallenge": "Manager Challenge",
+    "umpireReview": "Umpire Review",
+    "replayReview": "Replay Review",
+}
+
+PITCH_TYPE_LABELS = {
+    "FF": "4-Seam Fastball",
+    "SI": "Sinker",
+    "FC": "Cutter",
+    "SL": "Slider",
+    "CU": "Curveball",
+    "CH": "Changeup",
+    "FS": "Splitter",
+    "KC": "Knuckle Curve",
+    "KN": "Knuckleball",
+    "EP": "Eephus",
+    "FO": "Forkball",
+    "SC": "Screwball",
+    "ST": "Sweeper",
+    "SV": "Slurve",
+    "CS": "Slow Curve",
+    "FA": "Fastball",
+    "PO": "Pitchout",
+    "IN": "Intentional Ball",
+    "AB": "Automatic Ball",
+}
+
+ZONE_DESCRIPTIONS = {
+    1: "Up & In", 2: "Up Middle", 3: "Up & Away",
+    4: "Middle In", 5: "Heart of Plate", 6: "Middle Away",
+    7: "Down & In", 8: "Down Middle", 9: "Down & Away",
+    11: "Way Inside", 12: "Way High", 13: "Way Outside", 14: "Way Low",
+}
+
+
+def _is_challenge_event(event_details: dict) -> bool:
+    """Check if a play event is a challenge."""
+    event = (event_details.get("event") or "").lower()
+    event_type = (event_details.get("eventType") or "").lower()
+    return any(kw in event or kw in event_type for kw in CHALLENGE_EVENT_KEYWORDS)
+
+
+class MLBMonitor:
+    """Polls MLB live game feeds and surfaces new pitch challenge events."""
+
+    def __init__(self):
+        self._session: Optional[aiohttp.ClientSession] = None
+        # {game_pk: {event_uid: challenge_data}}
+        self._seen_challenges: dict[int, set[str]] = {}
+        # {game_pk: bool} — tracks which games we are actively watching
+        self._active_games: dict[int, bool] = {}
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=15)
+            )
+        return self._session
+
+    async def close(self):
+        if self._session and not self._session.closed:
+            await self._session.close()
+
+    async def get_todays_games(self) -> list[dict]:
+        """Fetch today's MLB schedule (Eastern time)."""
+        today = datetime.now(EASTERN).strftime("%Y-%m-%d")
+        url = (
+            f"{MLB_API_BASE}/v1/schedule"
+            f"?sportId=1&date={today}&hydrate=linescore,team"
+        )
+        try:
+            session = await self._get_session()
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    logger.warning("Schedule API returned %s", resp.status)
+                    return []
+                data = await resp.json()
+        except Exception as exc:
+            logger.error("Failed to fetch schedule: %s", exc)
+            return []
+
+        games = []
+        for date_entry in data.get("dates", []):
+            for game in date_entry.get("games", []):
+                games.append(game)
+        return games
+
+    async def get_live_feed(self, game_pk: int) -> Optional[dict]:
+        """Fetch the live game feed for a given gamePk."""
+        url = f"{MLB_API_BASE}/v1.1/game/{game_pk}/feed/live"
+        try:
+            session = await self._get_session()
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    return None
+                return await resp.json()
+        except Exception as exc:
+            logger.error("Failed to fetch live feed for game %s: %s", game_pk, exc)
+            return None
+
+    def _extract_challenges_from_feed(self, feed: dict, game_pk: int) -> list[dict]:
+        """
+        Walk the live feed and return any new challenge events not yet seen.
+        Returns fully enriched challenge dicts ready for formatting.
+        """
+        if game_pk not in self._seen_challenges:
+            self._seen_challenges[game_pk] = set()
+
+        game_data = feed.get("gameData", {})
+        live_data = feed.get("liveData", {})
+        all_plays = live_data.get("plays", {}).get("allPlays", [])
+
+        teams = game_data.get("teams", {})
+        away_team = teams.get("away", {}).get("teamName", "Away")
+        home_team = teams.get("home", {}).get("teamName", "Home")
+        away_abbr = teams.get("away", {}).get("abbreviation", "AWY")
+        home_abbr = teams.get("home", {}).get("abbreviation", "HME")
+        venue = game_data.get("venue", {}).get("name", "Unknown Venue")
+        game_pk_str = str(game_data.get("game", {}).get("pk", game_pk))
+
+        linescore = live_data.get("linescore", {})
+        away_score = linescore.get("teams", {}).get("away", {}).get("runs", 0)
+        home_score = linescore.get("teams", {}).get("home", {}).get("runs", 0)
+        current_inning = linescore.get("currentInning", "?")
+        inning_half = linescore.get("inningHalf", "").capitalize()
+
+        new_challenges = []
+
+        for play in all_plays:
+            at_bat_index = play.get("about", {}).get("atBatIndex", 0)
+            play_events = play.get("playEvents", [])
+            matchup = play.get("matchup", {})
+            batter_name = matchup.get("batter", {}).get("fullName", "Unknown Batter")
+            pitcher_name = matchup.get("pitcher", {}).get("fullName", "Unknown Pitcher")
+
+            for event_idx, play_event in enumerate(play_events):
+                # Unique ID for this event
+                uid = f"{game_pk_str}_{at_bat_index}_{event_idx}"
+                if uid in self._seen_challenges[game_pk]:
+                    continue
+
+                details = play_event.get("details", {})
+                if not _is_challenge_event(details):
+                    continue
+
+                # Mark as seen regardless of inProgress status
+                self._seen_challenges[game_pk].add(uid)
+
+                review = details.get("reviewDetails", {})
+                is_in_progress = review.get("inProgress", False)
+                is_overturned = review.get("isOverturned", None)
+                review_type_raw = review.get("reviewType", "")
+                review_type = REVIEW_TYPE_LABELS.get(review_type_raw, review_type_raw or "Challenge")
+                challenging_team_id = review.get("challengeTeamId")
+
+                # Find the challenging team name
+                away_id = teams.get("away", {}).get("id")
+                home_id = teams.get("home", {}).get("id")
+                if challenging_team_id == away_id:
+                    challenging_team = away_team
+                elif challenging_team_id == home_id:
+                    challenging_team = home_team
+                else:
+                    challenging_team = "Unknown Team"
+
+                # Find the most recent pitch in this at-bat for context
+                last_pitch = None
+                for pe in reversed(play_events[:event_idx]):
+                    if pe.get("isPitch", False):
+                        last_pitch = pe
+                        break
+
+                pitch_info = {}
+                if last_pitch:
+                    pitch_details = last_pitch.get("pitchData", {})
+                    pitch_type_code = last_pitch.get("details", {}).get("type", {}).get("code", "")
+                    pitch_type = PITCH_TYPE_LABELS.get(pitch_type_code, pitch_type_code or "Unknown")
+                    speed = pitch_details.get("startSpeed")
+                    zone = pitch_details.get("zone")
+                    zone_desc = ZONE_DESCRIPTIONS.get(zone, f"Zone {zone}" if zone else "Unknown Zone")
+                    original_call = last_pitch.get("details", {}).get("description", "")
+                    pitch_info = {
+                        "type": pitch_type,
+                        "type_code": pitch_type_code,
+                        "speed": speed,
+                        "zone": zone,
+                        "zone_desc": zone_desc,
+                        "original_call": original_call,
+                    }
+
+                count = play.get("count", {})
+                play_inning = play.get("about", {}).get("inning", current_inning)
+                is_top = play.get("about", {}).get("isTopInning", True)
+                half = "Top" if is_top else "Bot"
+
+                event_time = play_event.get("startTime", "")
+
+                challenge = {
+                    "uid": uid,
+                    "game_pk": game_pk,
+                    "game_pk_str": game_pk_str,
+                    "away_team": away_team,
+                    "home_team": home_team,
+                    "away_abbr": away_abbr,
+                    "home_abbr": home_abbr,
+                    "venue": venue,
+                    "away_score": away_score,
+                    "home_score": home_score,
+                    "inning": play_inning,
+                    "inning_half": half,
+                    "pitcher": pitcher_name,
+                    "batter": batter_name,
+                    "challenging_team": challenging_team,
+                    "review_type": review_type,
+                    "is_in_progress": is_in_progress,
+                    "is_overturned": is_overturned,
+                    "description": details.get("description", ""),
+                    "pitch_info": pitch_info,
+                    "balls": count.get("balls", 0),
+                    "strikes": count.get("strikes", 0),
+                    "outs": count.get("outs", 0),
+                    "event_time": event_time,
+                }
+                new_challenges.append(challenge)
+
+        return new_challenges
+
+    async def check_for_new_challenges(self) -> list[dict]:
+        """
+        Main polling method. Fetches today's live games and returns
+        any newly detected challenge events.
+        """
+        games = await self.get_todays_games()
+        all_challenges = []
+
+        live_statuses = {"I", "IR", "IO", "MA", "MF"}  # In Progress statuses
+
+        for game in games:
+            status_code = game.get("status", {}).get("statusCode", "")
+            if status_code not in live_statuses:
+                continue
+
+            game_pk = game.get("gamePk")
+            if not game_pk:
+                continue
+
+            feed = await self.get_live_feed(game_pk)
+            if not feed:
+                continue
+
+            challenges = self._extract_challenges_from_feed(feed, game_pk)
+            all_challenges.extend(challenges)
+
+        return all_challenges
