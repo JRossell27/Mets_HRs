@@ -285,6 +285,86 @@ async def test_challenge(ctx):
     await ctx.send(msg)
 
 
+@bot.command(name="diagdate")
+@commands.is_owner()
+async def diag_date(ctx, date_str: str = ""):
+    """
+    Fetch and display raw challenge data for a specific date (YYYY-MM-DD).
+    Usage: !diagdate 2026-03-27
+    Owner only.
+    """
+    if not date_str:
+        date_str = datetime.now(EASTERN).strftime("%Y-%m-%d")
+
+    await ctx.send(f"Fetching games for `{date_str}`…")
+    games = await monitor.get_games_for_date(date_str)
+    if not games:
+        await ctx.send("No games found for that date.")
+        return
+
+    final_codes = {"F", "FT", "FO", "O", "C", "CR"}
+    lines = [f"**{len(games)} game(s) on {date_str}:**"]
+    for g in games:
+        status = g.get("status", {})
+        sc = status.get("statusCode", "?")
+        ab = status.get("abstractGameState", "?")
+        away = g.get("teams", {}).get("away", {}).get("team", {}).get("abbreviation", "?")
+        home = g.get("teams", {}).get("home", {}).get("team", {}).get("abbreviation", "?")
+        lines.append(f"  `{g.get('gamePk')}` {away}@{home} — statusCode=`{sc}` abstractState=`{ab}`")
+    await ctx.send("\n".join(lines))
+
+    final_games = [
+        g for g in games
+        if g.get("status", {}).get("abstractGameState") == "Final"
+        or g.get("status", {}).get("statusCode") in final_codes
+    ]
+    await ctx.send(f"{len(final_games)} game(s) considered final — fetching feeds…")
+
+    total_challenges = []
+    for g in final_games:
+        game_pk = g.get("gamePk")
+        feed = await monitor.get_live_feed(game_pk)
+        if not feed:
+            await ctx.send(f"  `{game_pk}`: no feed returned")
+            continue
+        challenges = monitor.extract_all_challenges_from_feed(feed, game_pk)
+        total_challenges.extend(challenges)
+        if challenges:
+            for ch in challenges:
+                await ctx.send(
+                    f"  `{game_pk}` challenge uid=`{ch.get('uid')}`\n"
+                    f"  review_type=`{ch.get('review_type')}` "
+                    f"overturned=`{ch.get('is_overturned')}` "
+                    f"in_progress=`{ch.get('is_in_progress')}`\n"
+                    f"  challenger=`{ch.get('challenger_name')}` "
+                    f"role=`{ch.get('challenger_role')}`"
+                )
+        else:
+            await ctx.send(f"  `{game_pk}`: 0 challenge events detected")
+
+    await ctx.send(
+        f"**Total: {len(total_challenges)} challenge event(s) across "
+        f"{len(final_games)} final game(s) on {date_str}**"
+    )
+
+
+@bot.command(name="resetbackfill")
+@commands.is_owner()
+async def reset_backfill(ctx):
+    """
+    Clear the list of processed games so the next backfill re-processes
+    all games from season start.  Use this after fixing a detection bug.
+    Owner only.
+    """
+    count = len(tracker.data.get("processed_game_pks", []))
+    tracker.data["processed_game_pks"] = []
+    tracker._save()
+    await ctx.send(
+        f"Cleared {count} processed game PKs. "
+        f"Run `!absstats` after the next startup backfill to verify."
+    )
+
+
 @bot.command(name="help_bot")
 async def help_bot(ctx):
     """Show available commands."""

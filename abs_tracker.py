@@ -85,20 +85,36 @@ class ABSSeasonTracker:
 
         Returns True if the challenge was newly recorded.
         Skips in-progress challenges, inconclusive outcomes, and
-        non-ABS review types (e.g. manager replay challenges).
+        explicitly non-pitch review types (manager/replay challenges).
         """
+        uid = challenge.get("uid", "?")
+
         if challenge.get("is_in_progress"):
+            logger.debug("Skipping in-progress challenge uid=%s", uid)
             return False
+
         if challenge.get("is_overturned") is None:
+            logger.debug(
+                "Skipping challenge with no outcome (uid=%s review_type=%s)",
+                uid, challenge.get("review_type"),
+            )
             return False
-        # Only ABS pitch challenges — not manager/replay challenges
+
+        # Block explicitly non-ABS types; accept anything else that triggered
+        # challenge detection (covers empty/unknown review_type values too).
         review_type = challenge.get("review_type", "")
-        if "Pitch Challenge" not in review_type and "ABS" not in review_type:
+        non_abs_types = ("Manager Challenge", "Replay Review", "Umpire Review")
+        if any(t in review_type for t in non_abs_types):
+            logger.debug("Skipping non-ABS challenge type=%s uid=%s", review_type, uid)
             return False
 
         challenger_name = challenge.get("challenger_name", "").strip()
         challenger_role = challenge.get("challenger_role", "").strip()
         if not challenger_name or not challenger_role:
+            logger.debug(
+                "Skipping challenge — missing challenger info (uid=%s name=%r role=%r)",
+                uid, challenger_name, challenger_role,
+            )
             return False
 
         team = challenge.get("challenging_team", "")
@@ -267,6 +283,8 @@ class ABSSeasonTracker:
         today = datetime.now(EASTERN).date()
         current = SEASON_START
         recorded = 0
+        games_scanned = 0
+        challenges_found = 0
 
         logger.info(
             "ABS backfill: scanning %s → %s",
@@ -274,15 +292,28 @@ class ABSSeasonTracker:
             (today - timedelta(days=1)).isoformat(),
         )
 
-        final_statuses = {"F", "FT", "O", "C", "CR"}
+        # A game is "done" if its abstract state is Final OR its status code
+        # is in the known-final set.  Using both avoids missing edge cases.
+        final_status_codes = {"F", "FT", "FO", "O", "C", "CR"}
 
         while current < today:
             date_str = current.strftime("%Y-%m-%d")
             games = await monitor.get_games_for_date(date_str)
+            logger.info("Backfill %s: %d games found", date_str, len(games))
 
             for game in games:
-                status_code = game.get("status", {}).get("statusCode", "")
-                if status_code not in final_statuses:
+                status = game.get("status", {})
+                status_code = status.get("statusCode", "")
+                abstract_state = status.get("abstractGameState", "")
+                is_final = (
+                    abstract_state == "Final"
+                    or status_code in final_status_codes
+                )
+                if not is_final:
+                    logger.debug(
+                        "Skipping game %s — not final (statusCode=%s abstractState=%s)",
+                        game.get("gamePk"), status_code, abstract_state,
+                    )
                     continue
 
                 game_pk = game.get("gamePk")
@@ -291,10 +322,24 @@ class ABSSeasonTracker:
 
                 feed = await monitor.get_live_feed(game_pk)
                 if not feed:
+                    logger.warning("No feed returned for game %s", game_pk)
                     continue
 
+                games_scanned += 1
                 challenges = monitor.extract_all_challenges_from_feed(feed, game_pk)
+                logger.info(
+                    "Game %s (%s): %d challenge event(s) found",
+                    game_pk, date_str, len(challenges),
+                )
+                challenges_found += len(challenges)
+
                 for ch in challenges:
+                    logger.debug(
+                        "Challenge uid=%s review_type=%r overturned=%s challenger=%r role=%r",
+                        ch.get("uid"), ch.get("review_type"),
+                        ch.get("is_overturned"), ch.get("challenger_name"),
+                        ch.get("challenger_role"),
+                    )
                     if self.record_challenge(ch):
                         recorded += 1
 
@@ -302,5 +347,9 @@ class ABSSeasonTracker:
 
             current += timedelta(days=1)
 
-        logger.info("ABS backfill complete — %d new challenges recorded", recorded)
+        logger.info(
+            "ABS backfill complete — scanned %d games, found %d challenge events, "
+            "recorded %d new challenges",
+            games_scanned, challenges_found, recorded,
+        )
         return recorded
