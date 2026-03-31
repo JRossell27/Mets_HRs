@@ -1,8 +1,8 @@
 # fly.toml — Fly.io deployment config for MLB Pitch Challenge Bot
 # Run `fly launch` to create your app, then `fly deploy` to deploy.
 
-app = "mlb-pitch-challenge-bot"  # change this to your app name after fly launch
-primary_region = "ewr"           # ewr = Newark (closest to MLB data centers)
+app = "mets-hrs"
+primary_region = "ewr"
 
 [build]
 
