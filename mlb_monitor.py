@@ -128,6 +128,7 @@ def _is_challenge_event(event_details: dict, play_event: dict, play: dict) -> bo
     if isinstance(flags, dict) and (flags.get("isChallenge") or flags.get("isReview")):
         return True
 
+    # Do not accept generic "challenge/review" events as ABS by fallback.
     return False
 
 
@@ -157,7 +158,11 @@ def _is_abs_pitch_challenge(
     if any(k in text for k in ABS_EVENT_KEYWORDS):
         return True
 
-    # Do not accept generic "challenge/review" events as ABS by fallback.
+    # Fallback: ball/strike call challenged on a concrete pitch.
+    original_call = (pitch_info.get("original_call", "") or "").lower()
+    if pitch_info and ("strike" in original_call or "ball" in original_call):
+        return "challenge" in text
+
     return False
 
 
