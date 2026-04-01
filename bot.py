@@ -33,7 +33,7 @@ from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
 from abs_tracker import ABSSeasonTracker
-from message_formatter import format_challenge_message, format_update_message
+from message_formatter import format_challenge_message
 from mlb_monitor import MLBMonitor
 
 load_dotenv()
@@ -54,15 +54,21 @@ logging.basicConfig(
 logger = logging.getLogger("pitch_challenge_bot")
 
 # ─── Validation ───────────────────────────────────────────────────────────────
-if not DISCORD_TOKEN:
-    logger.error("DISCORD_TOKEN is not set. Add it to your .env file.")
-    sys.exit(1)
+if DISCORD_TOKEN:
+    BOT_TOKEN_VALID = True
+else:
+    BOT_TOKEN_VALID = False
+    logger.warning("DISCORD_TOKEN is not set. Bot will run in web-panel-only mode.")
 
 try:
     CHANNEL_ID = int(CHANNEL_ID_STR)
+    CHANNEL_VALID = True
 except ValueError:
-    logger.error("CHANNEL_ID is missing or not a valid integer.")
-    sys.exit(1)
+    CHANNEL_ID = 0
+    CHANNEL_VALID = False
+    logger.warning("CHANNEL_ID is missing/invalid. Bot will run in web-panel-only mode.")
+
+BOT_RUNTIME_ENABLED = BOT_TOKEN_VALID and CHANNEL_VALID
 
 # ─── Bot Setup ────────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
@@ -71,11 +77,6 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 monitor = MLBMonitor()
 tracker = ABSSeasonTracker()
-
-# Track in-progress challenges so we can send result updates.
-# {uid: discord.Message}
-pending_challenges: dict[str, discord.Message] = {}
-
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -104,6 +105,46 @@ def _enrich_with_season_stats(challenge: dict) -> dict:
     return challenge
 
 
+async def _send_chunked_message(target, text: str, limit: int = 2000) -> int:
+    """
+    Send long Discord content in multiple messages to avoid 2000-char limit.
+    Splits on line boundaries when possible.
+    Returns the number of messages sent.
+    """
+    if len(text) <= limit:
+        await target.send(text)
+        return 1
+
+    sent = 0
+    chunk = ""
+    for line in text.splitlines(keepends=True):
+        # If an individual line is longer than limit, hard-split it.
+        if len(line) > limit:
+            if chunk:
+                await target.send(chunk)
+                sent += 1
+                chunk = ""
+            start = 0
+            while start < len(line):
+                await target.send(line[start:start + limit])
+                sent += 1
+                start += limit
+            continue
+
+        if len(chunk) + len(line) > limit:
+            await target.send(chunk.rstrip("\n"))
+            sent += 1
+            chunk = line
+        else:
+            chunk += line
+
+    if chunk:
+        await target.send(chunk.rstrip("\n"))
+        sent += 1
+
+    return sent
+
+
 # ─── Background polling task ─────────────────────────────────────────────────
 @tasks.loop(seconds=POLL_INTERVAL)
 async def poll_mlb():
@@ -123,29 +164,16 @@ async def poll_mlb():
         uid = challenge["uid"]
 
         if challenge["is_in_progress"]:
-            # Send an "in progress" message and save it for later editing
-            try:
-                msg_text = format_challenge_message(challenge)
-                msg = await channel.send(msg_text)
-                pending_challenges[uid] = msg
-                logger.info("Challenge detected (in progress): %s", uid)
-            except Exception as exc:
-                logger.error("Failed to send challenge message: %s", exc)
+            # Do not notify while review is pending; wait for confirmed result.
+            logger.debug("Skipping in-progress challenge notification uid=%s", uid)
         else:
             # Challenge resolved — record to tracker FIRST so stats are current
             try:
                 tracker.record_challenge(challenge)
                 _enrich_with_season_stats(challenge)
-
-                if uid in pending_challenges:
-                    old_msg = pending_challenges.pop(uid)
-                    update_text = format_challenge_message(challenge)
-                    await old_msg.edit(content=update_text)
-                    logger.info("Challenge resolved (edited message): %s", uid)
-                else:
-                    msg_text = format_challenge_message(challenge)
-                    await channel.send(msg_text)
-                    logger.info("Challenge resolved (new message): %s", uid)
+                msg_text = format_challenge_message(challenge)
+                await channel.send(msg_text)
+                logger.info("Challenge resolved (single message): %s", uid)
             except Exception as exc:
                 logger.error("Failed to send/edit challenge message: %s", exc)
 
@@ -156,9 +184,9 @@ async def poll_mlb():
             games = await monitor.get_todays_games()
             if _all_games_final(games):
                 recap = tracker.generate_daily_recap()
-                await channel.send(recap)
+                parts = await _send_chunked_message(channel, recap)
                 tracker.mark_recap_posted(today_str)
-                logger.info("Posted ABS daily recap for %s", today_str)
+                logger.info("Posted ABS daily recap for %s in %d message(s)", today_str, parts)
         except Exception as exc:
             logger.error("Failed to post daily recap: %s", exc)
 
@@ -231,7 +259,7 @@ async def status(ctx):
 async def abs_stats(ctx):
     """Post the current ABS season challenge leaderboard."""
     recap = tracker.generate_daily_recap()
-    await ctx.send(recap)
+    await _send_chunked_message(ctx, recap)
 
 
 @bot.command(name="testchallenge")
@@ -321,12 +349,37 @@ async def diag_date(ctx, date_str: str = ""):
     await ctx.send(f"{len(final_games)} game(s) considered final — fetching feeds…")
 
     total_challenges = []
+    total_candidates = 0
     for g in final_games:
         game_pk = g.get("gamePk")
         feed = await monitor.get_live_feed(game_pk)
         if not feed:
             await ctx.send(f"  `{game_pk}`: no feed returned")
             continue
+
+        all_plays = feed.get("liveData", {}).get("plays", {}).get("allPlays", [])
+        candidate_hits = 0
+        for p in all_plays:
+            result = p.get("result", {})
+            result_txt = " ".join(
+                str(result.get(k, "")) for k in ("event", "eventType", "description")
+            ).lower()
+            if any(k in result_txt for k in ("challenge", "review", "overturned", "upheld")):
+                candidate_hits += 1
+
+            for e in p.get("playEvents", []):
+                d = e.get("details", {})
+                det_txt = " ".join(
+                    str(d.get(k, "")) for k in ("event", "eventType", "description")
+                ).lower()
+                if (
+                    any(k in det_txt for k in ("challenge", "review", "overturned", "upheld"))
+                    or d.get("reviewDetails")
+                    or e.get("reviewDetails")
+                ):
+                    candidate_hits += 1
+        total_candidates += candidate_hits
+
         challenges = monitor.extract_all_challenges_from_feed(feed, game_pk)
         total_challenges.extend(challenges)
         if challenges:
@@ -340,11 +393,15 @@ async def diag_date(ctx, date_str: str = ""):
                     f"role=`{ch.get('challenger_role')}`"
                 )
         else:
-            await ctx.send(f"  `{game_pk}`: 0 challenge events detected")
+            await ctx.send(
+                f"  `{game_pk}`: 0 challenge events detected "
+                f"(keyword/review candidates: {candidate_hits})"
+            )
 
     await ctx.send(
         f"**Total: {len(total_challenges)} challenge event(s) across "
-        f"{len(final_games)} final game(s) on {date_str}**"
+        f"{len(final_games)} final game(s) on {date_str}. "
+        f"Raw keyword/review candidates: {total_candidates}**"
     )
 
 
@@ -627,9 +684,12 @@ async def _api_post_recap(request):
         if channel is None:
             raise RuntimeError("Bot channel not found — is the bot connected?")
         recap = tracker.generate_daily_recap()
-        await channel.send(recap)
+        parts = await _send_chunked_message(channel, recap)
         return web.Response(
-            text=json.dumps({"ok": True, "message": "✅ Season recap posted to Discord."}),
+            text=json.dumps({
+                "ok": True,
+                "message": f"✅ Season recap posted to Discord in {parts} message(s).",
+            }),
             content_type="application/json",
         )
     except Exception as exc:
@@ -675,8 +735,12 @@ async def start_health_server():
 # ─── Entry point ─────────────────────────────────────────────────────────────
 async def main():
     asyncio.create_task(start_health_server())
-    async with bot:
-        await bot.start(DISCORD_TOKEN)
+    if BOT_RUNTIME_ENABLED:
+        async with bot:
+            await bot.start(DISCORD_TOKEN)
+    else:
+        # Keep the process alive so Fly health checks succeed while config is fixed.
+        await asyncio.Event().wait()
 
 if __name__ == "__main__":
     try:
