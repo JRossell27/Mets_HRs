@@ -28,7 +28,7 @@ DATA_FILE = _DATA_DIR / "abs_season_data.json"
 
 # Minimum challenges a player needs to appear in the leaderboard.
 MIN_CHALLENGES = 3
-CLASSIFIER_VERSION = 6
+CLASSIFIER_VERSION = 7
 
 
 class ABSSeasonTracker:
@@ -248,11 +248,9 @@ class ABSSeasonTracker:
 
         def player_row(rank: int, name: str, s: dict) -> str:
             pct = rate(s) * 100
-            filled = int(pct / 10)
-            bar = "█" * filled + "░" * (10 - filled)
             return (
                 f"`{rank:2}.` **{name}** ({s['team']})  "
-                f"{s['overturned']}/{s['challenges']}  **{pct:.1f}%**  `{bar}`"
+                f"{s['overturned']}/{s['challenges']}  **{pct:.1f}%**"
             )
 
         sort_key = lambda x: (-rate(x[1]), -x[1]["challenges"])
@@ -272,7 +270,6 @@ class ABSSeasonTracker:
         top_fielders = sorted(fielders_qual.items(), key=sort_key)[:3]
 
         lines = [
-            f"## 📊 ABS Challenge Tracker - {today_str}",
             f"## 📊 ABS Challenge Tracker — {today_str}",
             "",
             (
@@ -293,8 +290,6 @@ class ABSSeasonTracker:
                 lines.append(f"*No {role_label} with {MIN_CHALLENGES}+ challenges yet.*")
             lines.append("")
 
-        section("Top 3 Batters - Overturn Success", "🏏", top_batters, "batters")
-        section("Top 3 Fielders - Overturn Success", "🧤", top_fielders, "fielders")
         section("Top 3 Batters — Overturn Success", "🏏", top_batters, "batters")
         section("Top 3 Fielders — Overturn Success", "🧤", top_fielders, "fielders")
 

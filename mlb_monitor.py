@@ -359,6 +359,20 @@ class MLBMonitor:
                         "original_call": original_call,
                     }
 
+                # Fallback: when the API omits challengeTeamId, infer the
+                # challenging team from the original pitch call.
+                # "Called Strike" → batter's team challenged the strike;
+                # "Called Ball"   → fielding team challenged the ball.
+                if challenging_team == "Unknown Team" and pitch_info:
+                    _is_top = play.get("about", {}).get("isTopInning", True)
+                    _batting_team = away_team if _is_top else home_team
+                    _fielding_team = home_team if _is_top else away_team
+                    oc = pitch_info.get("original_call", "").lower()
+                    if "called strike" in oc:
+                        challenging_team = _batting_team
+                    elif "called ball" in oc:
+                        challenging_team = _fielding_team
+
                 # Use reviewed pitch identity as the primary UID so challenge
                 # start/result events for the same pitch collapse into one.
                 reviewed_play_id = (last_pitch or {}).get("playId")
