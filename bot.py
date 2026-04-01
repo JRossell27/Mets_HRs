@@ -161,7 +161,9 @@ async def poll_mlb():
     for challenge in challenges:
         uid = challenge["uid"]
 
-        if challenge["is_in_progress"]:
+        if not challenge.get("is_abs_pitch_challenge"):
+            logger.debug("Skipping non-ABS challenge uid=%s review_type=%s", uid, challenge.get("review_type"))
+        elif challenge["is_in_progress"]:
             logger.debug("Skipping in-progress challenge notification uid=%s", uid)
         elif tracker.has_posted_discord(uid):
             logger.debug("Skipping already-posted challenge uid=%s", uid)
