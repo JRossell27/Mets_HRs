@@ -28,7 +28,7 @@ DATA_FILE = _DATA_DIR / "abs_season_data.json"
 
 # Minimum challenges a player needs to appear in the leaderboard.
 MIN_CHALLENGES = 3
-CLASSIFIER_VERSION = 13
+CLASSIFIER_VERSION = 14
 
 
 class ABSSeasonTracker:
@@ -101,6 +101,7 @@ class ABSSeasonTracker:
             self.data["recorded_challenge_uids"] = []
             self.data["processed_game_pks"] = []
             self.data["daily_recap_posted"] = []
+            self.data["posted_discord_uids"] = []
             self.data["last_updated"] = None
             self._save()
 
@@ -161,25 +162,6 @@ class ABSSeasonTracker:
         if challenge.get("challenger_role") not in ("batter", "catcher", "pitcher"):
             logger.debug("Skipping challenge with unsupported role uid=%s", uid)
             return False
-        pitch_info_data = challenge.get("pitch_info", {}) or {}
-        original_call = (pitch_info_data.get("original_call", "") or "").lower()
-        pitch_call_code = pitch_info_data.get("code", "") or ""
-        # ABS challenges are always on called pitches.
-        # MLB API uses "Called Strike" (code "C") for strikes and "Ball" (code "B")
-        # for balls — NOT "called ball".  Accept either description or code.
-        is_called_pitch = (
-            "called strike" in original_call
-            or original_call.startswith("ball")
-            or pitch_call_code == "C"
-            or pitch_call_code == "B"
-        )
-        if original_call and not is_called_pitch:
-            logger.debug(
-                "Skipping non-called-pitch challenge uid=%s call=%r code=%r",
-                uid, original_call, pitch_call_code,
-            )
-            return False
-
         challenger_name = challenge.get("challenger_name", "").strip()
         challenger_role = challenge.get("challenger_role", "").strip()
         if not challenger_name or not challenger_role:
