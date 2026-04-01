@@ -132,6 +132,9 @@ def _is_abs_pitch_challenge(
     Strict ABS challenge classifier used for season stat recording.
     """
     rt = (review_type_raw or "").lower()
+    # Hard deny-list: these are explicitly non-ABS review workflows.
+    if rt in ("managerchallenge", "umpirereview", "replayreview"):
+        return False
     # "MJ" is the 2026 Stats API code for "Player challenge: Pitch Result" (ABS).
     # "pitchChallenge" appears in some older/alternate feed shapes.
     if rt in ("mj", "pitchchallenge"):
@@ -146,6 +149,22 @@ def _is_abs_pitch_challenge(
         str(play.get("result", {}).get("eventType", "")),
         str(play.get("result", {}).get("description", "")),
     ]).lower()
+
+    # Hard stop for obvious non-ABS outcomes/descriptions.
+    non_abs_markers = (
+        "hit by pitch",
+        "hbp",
+        "foul tip",
+        "check swing",
+        "safe",
+        "out at",
+        "tag play",
+        "home run",
+        "fan interference",
+        "catch/no catch",
+    )
+    if any(m in text for m in non_abs_markers):
+        return False
 
     # MLB ABS narration format example:
     # "Francisco Alvarez challenged ... call on the field was overturned..."
@@ -290,6 +309,7 @@ class MLBMonitor:
         inning_half = linescore.get("inningHalf", "").capitalize()
 
         new_challenges = []
+        emitted_uids: set[str] = set()
 
         _ABS_TYPES = ("mj", "pitchchallenge")
 
@@ -543,7 +563,12 @@ class MLBMonitor:
                 if emit_updates_only and previous_state == event_state:
                     continue
 
-                count = play.get("count", {})
+                # Use event-level count when available. play["count"] can drift
+                # to a later value as the at-bat continues, which can make the
+                # challenge alert show the wrong count for the challenged pitch.
+                play_count = play.get("count", {})
+                event_count = (last_pitch or play_event).get("count", {}) if (last_pitch or play_event) else {}
+                count = event_count or play_count
                 play_inning = play.get("about", {}).get("inning", current_inning)
                 is_top = play.get("about", {}).get("isTopInning", True)
                 half = "Top" if is_top else "Bot"
@@ -649,6 +674,12 @@ class MLBMonitor:
                     self._seen_challenges[game_pk][stable_uid] = event_state
                     uid = stable_uid
                     challenge["uid"] = uid
+
+                # Final de-dup guard for this feed pass: if two candidate events
+                # collapse to the same stable UID, only emit one.
+                if uid in emitted_uids:
+                    continue
+                emitted_uids.add(uid)
 
                 new_challenges.append(challenge)
 
