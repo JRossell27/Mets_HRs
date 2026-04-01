@@ -109,6 +109,29 @@ def _enrich_with_season_stats(challenge: dict) -> dict:
     return challenge
 
 
+def _challenge_fingerprint(challenge: dict) -> str:
+    """
+    Stable semantic fingerprint to prevent duplicate posts even if UID shape
+    changes for the same underlying event across feed updates.
+    """
+    pitch = challenge.get("pitch_info", {}) or {}
+    parts = [
+        str(challenge.get("game_pk", "")),
+        str(challenge.get("inning", "")),
+        str(challenge.get("inning_half", "")),
+        str(challenge.get("pitcher", "")),
+        str(challenge.get("batter", "")),
+        str(challenge.get("balls", "")),
+        str(challenge.get("strikes", "")),
+        str(challenge.get("outs", "")),
+        str(challenge.get("is_overturned", "")),
+        str(pitch.get("type_code", "")),
+        str(pitch.get("code", "")),
+        str(pitch.get("speed", "")),
+    ]
+    return "|".join(parts)
+
+
 async def _send_chunked_message(target, text: str, limit: int = 2000) -> int:
     """
     Send long Discord content in multiple messages to avoid 2000-char limit.
@@ -149,6 +172,24 @@ async def _send_chunked_message(target, text: str, limit: int = 2000) -> int:
     return sent
 
 
+async def _was_recently_posted(channel, message_text: str, limit: int = 25) -> bool:
+    """
+    Cross-process duplicate guard.
+    Looks at recent channel history and returns True if this bot account has
+    already posted identical content recently.
+    """
+    try:
+        me = bot.user
+        if me is None:
+            return False
+        async for msg in channel.history(limit=limit):
+            if msg.author.id == me.id and msg.content == message_text:
+                return True
+    except Exception as exc:
+        logger.debug("History duplicate check failed: %s", exc)
+    return False
+
+
 # ─── Background polling task ─────────────────────────────────────────────────
 @tasks.loop(seconds=POLL_INTERVAL)
 async def poll_mlb():
@@ -166,6 +207,7 @@ async def poll_mlb():
 
     for challenge in challenges:
         uid = challenge["uid"]
+        fingerprint = _challenge_fingerprint(challenge)
 
         pitch_info = challenge.get("pitch_info", {}) or {}
         raw_call = (pitch_info.get("original_call", "") or "").lower()
@@ -200,6 +242,8 @@ async def poll_mlb():
             logger.debug("Skipping already-posted-this-session uid=%s", uid)
         elif tracker.has_posted_discord(uid):
             logger.debug("Skipping already-posted challenge uid=%s", uid)
+        elif tracker.has_posted_fingerprint(fingerprint):
+            logger.debug("Skipping already-posted fingerprint=%s uid=%s", fingerprint, uid)
         else:
             # Add to session set BEFORE sending so that even if channel.send
             # partially succeeds but raises (network hiccup), we never re-post.
@@ -207,8 +251,14 @@ async def poll_mlb():
             try:
                 tracker.record_challenge(challenge)
                 msg_text = format_challenge_message(challenge)
+                if await _was_recently_posted(channel, msg_text):
+                    logger.debug("Skipping recently-posted duplicate message uid=%s", uid)
+                    tracker.mark_discord_posted(uid)
+                    tracker.mark_fingerprint_posted(fingerprint)
+                    continue
                 await channel.send(msg_text)
                 tracker.mark_discord_posted(uid)
+                tracker.mark_fingerprint_posted(fingerprint)
                 logger.info("Challenge posted uid=%s", uid)
             except Exception as exc:
                 logger.error("Failed to post challenge message: %s", exc)
@@ -271,11 +321,14 @@ async def _initialize_discord_post_state():
                 if not uid or not ch.get("is_abs_pitch_challenge"):
                     continue
                 if not ch.get("is_in_progress"):
+                    fingerprint = _challenge_fingerprint(ch)
                     # Resolved — mark so the poll loop will never post it.
                     _session_posted_uids.add(uid)
                     if not tracker.has_posted_discord(uid):
                         tracker.mark_discord_posted(uid)
                         marked += 1
+                    if not tracker.has_posted_fingerprint(fingerprint):
+                        tracker.mark_fingerprint_posted(fingerprint)
         except Exception as exc:
             logger.error("Startup init: failed to process game %s: %s", game_pk, exc)
 
