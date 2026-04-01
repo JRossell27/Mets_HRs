@@ -608,12 +608,17 @@ class MLBMonitor:
                 # This prevents a race condition where a challenge first detected
                 # via keyword scanning (UID = …_event_idx) later re-appears via
                 # play-level reviewDetails (UID = …_abs) and gets re-posted.
-                if challenge["is_abs_pitch_challenge"]:
+                if challenge["is_abs_pitch_challenge"] and uid != f"{game_pk_str}_{at_bat_index}_abs":
+                    # Keyword-scan path found this as ABS but used a playId-based
+                    # uid.  Migrate to the stable at_bat_index uid so that
+                    # has_posted_discord works correctly across restarts and so
+                    # a later play_level_review detection of the same challenge
+                    # won't produce a new uid and re-post.
                     stable_uid = f"{game_pk_str}_{at_bat_index}_abs"
                     self._seen_challenges[game_pk].pop(uid, None)
+                    self._seen_challenges[game_pk][stable_uid] = event_state
                     uid = stable_uid
                     challenge["uid"] = uid
-                    self._seen_challenges[game_pk].setdefault(uid, event_state)
 
                 new_challenges.append(challenge)
 
