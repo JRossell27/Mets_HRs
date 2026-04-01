@@ -478,16 +478,24 @@ class MLBMonitor:
                     elif oc_lower.startswith("ball") or pc == "B":
                         challenging_team = _ev_fielding
 
-                # Use reviewed pitch identity as the primary UID so challenge
-                # start/result events for the same pitch collapse into one.
-                reviewed_play_id = (last_pitch or {}).get("playId")
-                event_play_id = play_event.get("playId")
-                if reviewed_play_id:
-                    uid = f"{game_pk_str}_{at_bat_index}_{reviewed_play_id}"
-                elif event_play_id:
-                    uid = f"{game_pk_str}_{at_bat_index}_{event_play_id}"
+                # For plays with play-level reviewDetails use a UID based solely
+                # on at_bat_index.  This is completely stable: same play always
+                # produces the same UID regardless of which specific pitch event
+                # is found, so has_posted_discord works correctly across restarts
+                # and live-feed updates without generating spurious duplicates.
+                if play_level_review:
+                    uid = f"{game_pk_str}_{at_bat_index}_abs"
                 else:
-                    uid = f"{game_pk_str}_{at_bat_index}_{event_idx}"
+                    # Keyword-scanning path (manager challenges, older feed shapes):
+                    # fall back to playId or event index.
+                    reviewed_play_id = (last_pitch or {}).get("playId")
+                    event_play_id = play_event.get("playId")
+                    if reviewed_play_id:
+                        uid = f"{game_pk_str}_{at_bat_index}_{reviewed_play_id}"
+                    elif event_play_id:
+                        uid = f"{game_pk_str}_{at_bat_index}_{event_play_id}"
+                    else:
+                        uid = f"{game_pk_str}_{at_bat_index}_{event_idx}"
 
                 event_state = (
                     "in_progress"
