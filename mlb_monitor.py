@@ -132,6 +132,9 @@ def _is_abs_pitch_challenge(
     Strict ABS challenge classifier used for season stat recording.
     """
     rt = (review_type_raw or "").lower()
+    # Hard deny-list: these are explicitly non-ABS review workflows.
+    if rt in ("managerchallenge", "umpirereview", "replayreview"):
+        return False
     # "MJ" is the 2026 Stats API code for "Player challenge: Pitch Result" (ABS).
     # "pitchChallenge" appears in some older/alternate feed shapes.
     if rt in ("mj", "pitchchallenge"):
@@ -146,6 +149,22 @@ def _is_abs_pitch_challenge(
         str(play.get("result", {}).get("eventType", "")),
         str(play.get("result", {}).get("description", "")),
     ]).lower()
+
+    # Hard stop for obvious non-ABS outcomes/descriptions.
+    non_abs_markers = (
+        "hit by pitch",
+        "hbp",
+        "foul tip",
+        "check swing",
+        "safe",
+        "out at",
+        "tag play",
+        "home run",
+        "fan interference",
+        "catch/no catch",
+    )
+    if any(m in text for m in non_abs_markers):
+        return False
 
     # MLB ABS narration format example:
     # "Francisco Alvarez challenged ... call on the field was overturned..."
@@ -290,6 +309,7 @@ class MLBMonitor:
         inning_half = linescore.get("inningHalf", "").capitalize()
 
         new_challenges = []
+        emitted_uids: set[str] = set()
 
         _ABS_TYPES = ("mj", "pitchchallenge")
 
@@ -508,18 +528,23 @@ class MLBMonitor:
                     elif oc_lower.startswith("ball") or pc == "B":
                         challenging_team = _ev_fielding
 
-                # For plays with play-level reviewDetails use a UID based solely
-                # on at_bat_index.  This is completely stable: same play always
-                # produces the same UID regardless of which specific pitch event
-                # is found, so has_posted_discord works correctly across restarts
-                # and live-feed updates without generating spurious duplicates.
+                reviewed_play_id = (last_pitch or {}).get("playId")
+                event_play_id = play_event.get("playId")
+
+                # For plays with play-level reviewDetails, prefer the reviewed
+                # pitch playId in the UID. Some at-bats can contain multiple
+                # ABS challenges (different pitches). Using only at_bat_index
+                # would collapse those distinct challenges into one UID.
                 if play_level_review:
-                    uid = f"{game_pk_str}_{at_bat_index}_abs"
+                    if reviewed_play_id:
+                        uid = f"{game_pk_str}_{at_bat_index}_{reviewed_play_id}_abs"
+                    elif event_play_id:
+                        uid = f"{game_pk_str}_{at_bat_index}_{event_play_id}_abs"
+                    else:
+                        uid = f"{game_pk_str}_{at_bat_index}_{event_idx}_abs"
                 else:
                     # Keyword-scanning path (manager challenges, older feed shapes):
                     # fall back to playId or event index.
-                    reviewed_play_id = (last_pitch or {}).get("playId")
-                    event_play_id = play_event.get("playId")
                     if reviewed_play_id:
                         uid = f"{game_pk_str}_{at_bat_index}_{reviewed_play_id}"
                     elif event_play_id:
@@ -543,7 +568,12 @@ class MLBMonitor:
                 if emit_updates_only and previous_state == event_state:
                     continue
 
-                count = play.get("count", {})
+                # Use event-level count when available. play["count"] can drift
+                # to a later value as the at-bat continues, which can make the
+                # challenge alert show the wrong count for the challenged pitch.
+                play_count = play.get("count", {})
+                event_count = (last_pitch or play_event).get("count", {}) if (last_pitch or play_event) else {}
+                count = event_count or play_count
                 play_inning = play.get("about", {}).get("inning", current_inning)
                 is_top = play.get("about", {}).get("isTopInning", True)
                 half = "Top" if is_top else "Bot"
@@ -633,22 +663,20 @@ class MLBMonitor:
                         review_type_raw, details, play_event, play, pitch_info
                     ),
                 }
-                # Override UID to the stable at_bat_index form for ALL ABS
-                # challenges regardless of which detection path found them.
-                # This prevents a race condition where a challenge first detected
-                # via keyword scanning (UID = …_event_idx) later re-appears via
-                # play-level reviewDetails (UID = …_abs) and gets re-posted.
-                if challenge["is_abs_pitch_challenge"] and uid != f"{game_pk_str}_{at_bat_index}_abs":
-                    # Keyword-scan path found this as ABS but used a playId-based
-                    # uid.  Migrate to the stable at_bat_index uid so that
-                    # has_posted_discord and _session_posted_uids work correctly.
-                    # Intentionally do NOT pop the original uid: keeping it in
-                    # _seen_challenges means if the same pitch is found next poll,
-                    # emit_updates_only can suppress re-emission immediately.
-                    stable_uid = f"{game_pk_str}_{at_bat_index}_abs"
+                # For ABS challenges detected through keyword-only path (without
+                # the _abs suffix), normalize UID to match play-level format so
+                # the same challenged pitch keeps one canonical UID.
+                if challenge["is_abs_pitch_challenge"] and not uid.endswith("_abs"):
+                    stable_uid = f"{uid}_abs"
                     self._seen_challenges[game_pk][stable_uid] = event_state
                     uid = stable_uid
                     challenge["uid"] = uid
+
+                # Final de-dup guard for this feed pass: if two candidate events
+                # collapse to the same stable UID, only emit one.
+                if uid in emitted_uids:
+                    continue
+                emitted_uids.add(uid)
 
                 new_challenges.append(challenge)
 
