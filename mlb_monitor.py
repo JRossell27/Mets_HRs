@@ -319,12 +319,13 @@ class MLBMonitor:
                 review_type = REVIEW_TYPE_LABELS.get(review_type_raw, review_type_raw or "Challenge")
                 challenging_team_id = review.get("challengeTeamId")
 
-                # Find the challenging team name
+                # Find the challenging team name.  Cast both sides to str to
+                # guard against int/string type mismatches in API responses.
                 away_id = teams.get("away", {}).get("id")
                 home_id = teams.get("home", {}).get("id")
-                if challenging_team_id == away_id:
+                if challenging_team_id is not None and str(challenging_team_id) == str(away_id):
                     challenging_team = away_team
-                elif challenging_team_id == home_id:
+                elif challenging_team_id is not None and str(challenging_team_id) == str(home_id):
                     challenging_team = home_team
                 else:
                     challenging_team = "Unknown Team"
@@ -350,28 +351,33 @@ class MLBMonitor:
                     zone = pitch_details.get("zone")
                     zone_desc = ZONE_DESCRIPTIONS.get(zone, f"Zone {zone}" if zone else "Unknown Zone")
                     original_call = last_pitch.get("details", {}).get("description", "")
+                    pitch_call_code = last_pitch.get("details", {}).get("code", "")
                     pitch_info = {
                         "type": pitch_type,
                         "type_code": pitch_type_code,
+                        "code": pitch_call_code,
                         "speed": speed,
                         "zone": zone,
                         "zone_desc": zone_desc,
                         "original_call": original_call,
                     }
 
-                # Fallback: when the API omits challengeTeamId, infer the
-                # challenging team from the original pitch call.
-                # "Called Strike" → batter's team challenged the strike;
-                # "Called Ball"   → fielding team challenged the ball.
-                if challenging_team == "Unknown Team" and pitch_info:
-                    _is_top = play.get("about", {}).get("isTopInning", True)
-                    _batting_team = away_team if _is_top else home_team
-                    _fielding_team = home_team if _is_top else away_team
-                    oc = pitch_info.get("original_call", "").lower()
-                    if "called strike" in oc:
-                        challenging_team = _batting_team
-                    elif "called ball" in oc:
-                        challenging_team = _fielding_team
+                # Use the original pitch call as the authoritative signal for
+                # which team challenged.  In 2026 ABS:
+                #   Called Strike (details.code "C") → batter disputed → batting team
+                #   Ball          (details.code "B") → catcher disputed → fielding team
+                # This is more reliable than challengeTeamId, which the API
+                # frequently omits or returns with a type mismatch.
+                _ev_is_top = play.get("about", {}).get("isTopInning", True)
+                _ev_batting = away_team if _ev_is_top else home_team
+                _ev_fielding = home_team if _ev_is_top else away_team
+                oc_lower = (pitch_info.get("original_call", "") or "").lower()
+                pc = pitch_info.get("code", "") if pitch_info else ""
+                if "called strike" in oc_lower or pc == "C":
+                    challenging_team = _ev_batting
+                elif oc_lower.startswith("ball") or pc == "B":
+                    challenging_team = _ev_fielding
+                # else: keep challengeTeamId-resolved value (may be "Unknown Team" → filtered later)
 
                 # Use reviewed pitch identity as the primary UID so challenge
                 # start/result events for the same pitch collapse into one.
