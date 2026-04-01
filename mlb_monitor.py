@@ -563,7 +563,12 @@ class MLBMonitor:
                 if emit_updates_only and previous_state == event_state:
                     continue
 
-                count = play.get("count", {})
+                # Use event-level count when available. play["count"] can drift
+                # to a later value as the at-bat continues, which can make the
+                # challenge alert show the wrong count for the challenged pitch.
+                play_count = play.get("count", {})
+                event_count = (last_pitch or play_event).get("count", {}) if (last_pitch or play_event) else {}
+                count = event_count or play_count
                 play_inning = play.get("about", {}).get("inning", current_inning)
                 is_top = play.get("about", {}).get("isTopInning", True)
                 half = "Top" if is_top else "Bot"
