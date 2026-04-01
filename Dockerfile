@@ -8,5 +8,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app_main.py mlb_monitor.py message_formatter.py abs_tracker.py ./
+COPY bot.py mlb_monitor.py message_formatter.py abs_tracker.py ./
+RUN python -m py_compile bot.py mlb_monitor.py message_formatter.py abs_tracker.py
 
 CMD ["python", "-u", "app_main.py"]

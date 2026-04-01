@@ -273,6 +273,7 @@ class ABSSeasonTracker:
 
         lines = [
             f"## 📊 ABS Challenge Tracker - {today_str}",
+            f"## 📊 ABS Challenge Tracker — {today_str}",
             "",
             (
                 f"**2026 Season Totals** · "
@@ -294,6 +295,8 @@ class ABSSeasonTracker:
 
         section("Top 3 Batters - Overturn Success", "🏏", top_batters, "batters")
         section("Top 3 Fielders - Overturn Success", "🧤", top_fielders, "fielders")
+        section("Top 3 Batters — Overturn Success", "🏏", top_batters, "batters")
+        section("Top 3 Fielders — Overturn Success", "🧤", top_fielders, "fielders")
 
         lines.append(
             f"*Min. {MIN_CHALLENGES} challenges to qualify · "
@@ -391,3 +394,369 @@ class ABSSeasonTracker:
             games_scanned, challenges_found, recorded,
         )
         return recorded
+diff --git a/abs_tracker.py b/abs_tracker.py
+index 30effa8209870b86b1f8f1ebe926756eced4c8bd..da2a5a3608524c6e5851ed560b60484c88017ae7 100644
+--- a/abs_tracker.py
++++ b/abs_tracker.py
+@@ -6,290 +6,320 @@ across the 2026 MLB season starting March 25, 2026. Data is persisted to
+ a JSON file so stats survive bot restarts. On cold starts the backfill
+ method re-fetches all completed games from season start to rebuild stats.
+ """
+ 
+ import json
+ import logging
+ import os
+ from datetime import date, datetime, timedelta
+ from pathlib import Path
+ from typing import Optional
+ 
+ import pytz
+ 
+ logger = logging.getLogger(__name__)
+ 
+ EASTERN = pytz.timezone("US/Eastern")
+ SEASON_START = date(2026, 3, 25)
+ 
+ # Where to store persistent data.  Set DATA_DIR env var to a mounted volume
+ # path (e.g. /data) so stats survive container restarts on Fly.io.
+ _DATA_DIR = Path(os.getenv("DATA_DIR", "."))
+ DATA_FILE = _DATA_DIR / "abs_season_data.json"
+ 
+ # Minimum challenges a player needs to appear in the leaderboard.
+ MIN_CHALLENGES = 3
++CLASSIFIER_VERSION = 6
+ 
+ 
+ class ABSSeasonTracker:
+     """Persists and analyses ABS pitch challenge results for the 2026 season."""
+ 
+     def __init__(self, data_file: Path = DATA_FILE):
+         self.data_file = data_file
+         self.data = self._load()
++        self._normalize_data_schema()
+ 
+     # ── Persistence ──────────────────────────────────────────────────────────
+ 
+     def _load(self) -> dict:
+         if self.data_file.exists():
+             try:
+                 with open(self.data_file) as f:
+                     return json.load(f)
+             except Exception as exc:
+                 logger.warning("Could not load ABS tracker data: %s", exc)
+         return {
+             "season_year": 2026,
+             "season_start": "2026-03-25",
++            "classifier_version": CLASSIFIER_VERSION,
+             "last_updated": None,
+             # player_name -> {role, team, challenges, overturned, upheld}
+             "players": {},
+             # game PKs (as strings) we have already fully processed
+             "processed_game_pks": [],
++            # unique challenge IDs already recorded in season totals
++            "recorded_challenge_uids": [],
+             # dates (YYYY-MM-DD) for which the daily recap has been posted
+             "daily_recap_posted": [],
+         }
+ 
+     def _save(self):
+         try:
+             self.data_file.parent.mkdir(parents=True, exist_ok=True)
+             with open(self.data_file, "w") as f:
+                 json.dump(self.data, f, indent=2)
+         except Exception as exc:
+             logger.error("Failed to save ABS tracker data: %s", exc)
+ 
++    def _normalize_data_schema(self):
++        """
++        Ensure persisted data has expected keys/types after upgrades.
++        """
++        self.data.setdefault("processed_game_pks", [])
++        self.data.setdefault("daily_recap_posted", [])
++        self.data.setdefault("players", {})
++        self.data.setdefault("recorded_challenge_uids", [])
++        self.data.setdefault("classifier_version", 1)
++
++        # Backward/forward compatibility: support list or dict.
++        recorded = self.data.get("recorded_challenge_uids")
++        if isinstance(recorded, dict):
++            self.data["recorded_challenge_uids"] = list(recorded.keys())
++        elif not isinstance(recorded, list):
++            self.data["recorded_challenge_uids"] = []
++
++        # If challenge-classification logic changed, rebuild stats from scratch
++        # on next backfill so persisted totals stay consistent with new filters.
++        if self.data.get("classifier_version", 1) < CLASSIFIER_VERSION:
++            logger.warning(
++                "Classifier version changed (%s -> %s). Resetting season aggregates for re-backfill.",
++                self.data.get("classifier_version", 1), CLASSIFIER_VERSION,
++            )
++            self.data["classifier_version"] = CLASSIFIER_VERSION
++            self.data["players"] = {}
++            self.data["recorded_challenge_uids"] = []
++            self.data["processed_game_pks"] = []
++            self.data["daily_recap_posted"] = []
++            self.data["last_updated"] = None
++            self._save()
++
+     # ── Game processing state ────────────────────────────────────────────────
+ 
+     def is_game_processed(self, game_pk: int) -> bool:
+         return str(game_pk) in self.data["processed_game_pks"]
+ 
+     def mark_game_processed(self, game_pk: int):
+         pk_str = str(game_pk)
+         if pk_str not in self.data["processed_game_pks"]:
+             self.data["processed_game_pks"].append(pk_str)
+             self._save()
+ 
+     # ── Challenge recording ──────────────────────────────────────────────────
+ 
+     def record_challenge(self, challenge: dict) -> bool:
+         """
+         Record a resolved ABS pitch challenge into the season stats.
+ 
+         Returns True if the challenge was newly recorded.
+         Skips in-progress challenges, inconclusive outcomes, and
+         explicitly non-pitch review types (manager/replay challenges).
+         """
+         uid = challenge.get("uid", "?")
++        recorded_uids = set(self.data.get("recorded_challenge_uids", []))
++        if uid in recorded_uids:
++            logger.debug("Skipping duplicate already-recorded challenge uid=%s", uid)
++            return False
+ 
+         if challenge.get("is_in_progress"):
+             logger.debug("Skipping in-progress challenge uid=%s", uid)
+             return False
+ 
+         if challenge.get("is_overturned") is None:
+             logger.debug(
+                 "Skipping challenge with no outcome (uid=%s review_type=%s)",
+                 uid, challenge.get("review_type"),
+             )
+             return False
+ 
+         # Block explicitly non-ABS types; accept anything else that triggered
+-        # challenge detection (covers empty/unknown review_type values too).
++        # challenge detection only if explicitly classified as ABS pitch review.
+         review_type = challenge.get("review_type", "")
+         non_abs_types = ("Manager Challenge", "Replay Review", "Umpire Review")
+         if any(t in review_type for t in non_abs_types):
+             logger.debug("Skipping non-ABS challenge type=%s uid=%s", review_type, uid)
+             return False
++        if not challenge.get("is_abs_pitch_challenge", False):
++            logger.debug(
++                "Skipping non-ABS/ambiguous challenge uid=%s review_type=%s",
++                uid, review_type,
++            )
++            return False
++        if challenge.get("challenging_team") in ("", "Unknown Team"):
++            logger.debug("Skipping challenge with unknown challenging team uid=%s", uid)
++            return False
++        if challenge.get("challenger_role") not in ("batter", "catcher", "pitcher"):
++            logger.debug("Skipping challenge with unsupported role uid=%s", uid)
++            return False
++        original_call = (
++            challenge.get("pitch_info", {}).get("original_call", "") or ""
++        ).lower()
++        if not any(k in original_call for k in ("called strike", "called ball")):
++            logger.debug("Skipping non-called-pitch challenge uid=%s call=%r", uid, original_call)
++            return False
+ 
+         challenger_name = challenge.get("challenger_name", "").strip()
+         challenger_role = challenge.get("challenger_role", "").strip()
+         if not challenger_name or not challenger_role:
+             logger.debug(
+                 "Skipping challenge — missing challenger info (uid=%s name=%r role=%r)",
+                 uid, challenger_name, challenger_role,
+             )
+             return False
+ 
+         team = challenge.get("challenging_team", "")
+         is_overturned = challenge["is_overturned"]
+ 
+         players = self.data["players"]
+         if challenger_name not in players:
+             players[challenger_name] = {
+                 "role": challenger_role,
+                 "team": team,
+                 "challenges": 0,
+                 "overturned": 0,
+                 "upheld": 0,
+             }
+ 
+         p = players[challenger_name]
+         p["challenges"] += 1
+         if is_overturned:
+             p["overturned"] += 1
+         else:
+             p["upheld"] += 1
+ 
+         # Keep role at the most specific value (catcher beats pitcher)
+         if challenger_role in ("batter", "catcher"):
+             p["role"] = challenger_role
+         elif p["role"] not in ("batter", "catcher"):
+             p["role"] = challenger_role
+ 
+         p["team"] = team  # update to most recent team (trades, etc.)
+         self.data["last_updated"] = datetime.now(EASTERN).isoformat()
++        self.data.setdefault("recorded_challenge_uids", []).append(uid)
+         self._save()
+         return True
+ 
+     # ── Stats lookups ────────────────────────────────────────────────────────
+ 
+     def get_player_stats(self, player_name: str) -> Optional[dict]:
+         """Return raw stats dict for a player, or None if not found."""
+         return self.data["players"].get(player_name)
+ 
+     def get_player_pct(self, player_name: str) -> Optional[float]:
+         """Return the player's season overturn percentage (0-100), or None."""
+         stats = self.get_player_stats(player_name)
+         if not stats or stats["challenges"] == 0:
+             return None
+         return stats["overturned"] / stats["challenges"] * 100
+ 
+     # ── Daily recap ──────────────────────────────────────────────────────────
+ 
+     def has_posted_recap(self, date_str: str) -> bool:
+         return date_str in self.data.get("daily_recap_posted", [])
+ 
+     def mark_recap_posted(self, date_str: str):
+         lst = self.data.setdefault("daily_recap_posted", [])
+         if date_str not in lst:
+             lst.append(date_str)
+             self._save()
+ 
+     def generate_daily_recap(self) -> str:
+         """
+         Build the daily ABS season-tracker Discord message.
+-
+-        Sections:
+-          • Season overview (totals + overall overturn rate)
+-          • Top Batters  — batting-team challenges
+-          • Top Catchers — fielding-team challenges credited to the catcher
+-          • Top Pitchers — fielding-team challenges credited to the pitcher
+-            (when catcher name is unavailable from the API)
+-          • Overall Leaderboard (all roles combined)
+         """
+         today_str = datetime.now(EASTERN).strftime("%B %d, %Y")
+         players = self.data["players"]
+ 
+         total_challenges = sum(s["challenges"] for s in players.values())
+         total_overturned = sum(s["overturned"] for s in players.values())
+         overall_pct = (total_overturned / total_challenges * 100) if total_challenges else 0
+ 
+         def rate(s: dict) -> float:
+             return s["overturned"] / s["challenges"] if s["challenges"] else 0.0
+ 
+         def player_row(rank: int, name: str, s: dict) -> str:
+             pct = rate(s) * 100
+             filled = int(pct / 10)
+             bar = "█" * filled + "░" * (10 - filled)
+             return (
+                 f"`{rank:2}.` **{name}** ({s['team']})  "
+                 f"{s['overturned']}/{s['challenges']}  **{pct:.1f}%**  `{bar}`"
+             )
+ 
+         sort_key = lambda x: (-rate(x[1]), -x[1]["challenges"])
+ 
+         def ranked(role: str) -> list:
+             qual = {
+                 n: s for n, s in players.items()
+                 if s["role"] == role and s["challenges"] >= MIN_CHALLENGES
+             }
+-            return sorted(qual.items(), key=sort_key)[:10]
++            return sorted(qual.items(), key=sort_key)[:3]
+ 
+-        top_batters  = ranked("batter")
+-        top_catchers = ranked("catcher")
+-        top_pitchers = ranked("pitcher")
+-
+-        all_qual = {
+-            n: s for n, s in players.items() if s["challenges"] >= MIN_CHALLENGES
++        top_batters = ranked("batter")
++        fielders_qual = {
++            n: s for n, s in players.items()
++            if s["role"] != "batter" and s["challenges"] >= MIN_CHALLENGES
+         }
+-        top_overall = sorted(all_qual.items(), key=sort_key)[:10]
++        top_fielders = sorted(fielders_qual.items(), key=sort_key)[:3]
+ 
+         lines = [
+-            f"## 📊 ABS Season Challenge Tracker — {today_str}",
++            f"## 📊 ABS Challenge Tracker — {today_str}",
+             "",
+             (
+                 f"**2026 Season Totals** · "
+                 f"Challenges: **{total_challenges}** · "
+                 f"Overturned: **{total_overturned}** · "
+                 f"Overall Success Rate: **{overall_pct:.1f}%**"
+             ),
+             "",
+         ]
+ 
+         def section(title: str, emoji: str, rows: list, role_label: str):
+             lines.append(f"### {emoji} {title}")
+             if rows:
+                 for i, (name, s) in enumerate(rows, 1):
+                     lines.append(player_row(i, name, s))
+             else:
+                 lines.append(f"*No {role_label} with {MIN_CHALLENGES}+ challenges yet.*")
+             lines.append("")
+ 
+-        section(
+-            "Top Batters — ABS Challenge Success",
+-            "🏏", top_batters, "batters",
+-        )
+-        section(
+-            "Top Catchers — Defense Challenge Success",
+-            "🧤", top_catchers, "catchers",
+-        )
+-        section(
+-            "Top Pitchers — Defense Challenge Success",
+-            "⚾", top_pitchers, "pitchers",
+-        )
+-
+-        lines.append("### 🏆 Overall Leaderboard")
+-        role_emoji = {"batter": "🏏", "catcher": "🧤", "pitcher": "⚾"}
+-        if top_overall:
+-            for i, (name, s) in enumerate(top_overall, 1):
+-                emoji = role_emoji.get(s["role"], "⚾")
+-                lines.append(f"{emoji} " + player_row(i, name, s))
+-        else:
+-            lines.append(f"*No players with {MIN_CHALLENGES}+ challenges yet.*")
++        section("Top 3 Batters — Overturn Success", "🏏", top_batters, "batters")
++        section("Top 3 Fielders — Overturn Success", "🧤", top_fielders, "fielders")
+ 
+-        lines.append("")
+         lines.append(
+             f"*Min. {MIN_CHALLENGES} challenges to qualify · "
+-            f"2026 MLB Season · Updated after final game each day*"
++            f"Fielders include catcher/pitcher defensive challenges*"
+         )
+         return "\n".join(lines)
+ 
+     # ── Backfill ─────────────────────────────────────────────────────────────
+ 
+     async def backfill_season(self, monitor) -> int:
+         """
+         Fetch and process every completed game from SEASON_START through
+         yesterday (Eastern time) that hasn't been processed yet.
+ 
+         Returns the number of new challenges recorded.
+         """
+         today = datetime.now(EASTERN).date()
+         current = SEASON_START
+         recorded = 0
+         games_scanned = 0
+         challenges_found = 0
+ 
+         logger.info(
+             "ABS backfill: scanning %s → %s",
+             SEASON_START.isoformat(),
+             (today - timedelta(days=1)).isoformat(),
+         )
+ 
+         while current < today:
