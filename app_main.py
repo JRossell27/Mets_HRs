@@ -170,10 +170,13 @@ async def poll_mlb():
         pitch_info = challenge.get("pitch_info", {}) or {}
         raw_call = (pitch_info.get("original_call", "") or "").lower()
         pitch_code = (pitch_info.get("code", "") or "")
+        desc = (challenge.get("description", "") or "").lower()
+        review_type = (challenge.get("review_type", "") or "").lower()
         # Only post if the pitch is a called ball or called strike.
         # Explicit deny: HBP, swinging strike, foul, in-play — these are never
         # ABS-challengeable and indicate the wrong pitch was found in the feed.
         _BLOCKED_CALLS = ("hit by pitch", "swinging strike", "foul", "in play")
+        _BLOCKED_REVIEW_TYPES = ("manager challenge", "umpire review", "replay review")
         _pitch_is_called = (
             not any(s in raw_call for s in _BLOCKED_CALLS)
             and (
@@ -183,6 +186,12 @@ async def poll_mlb():
                                         or raw_call.startswith("ball")))
             )
         )
+        _looks_non_abs = any(s in desc for s in _BLOCKED_CALLS) or any(s in review_type for s in _BLOCKED_REVIEW_TYPES)
+
+        if not challenge.get("is_abs_pitch_challenge"):
+            logger.debug("Skipping non-ABS challenge uid=%s review_type=%s", uid, challenge.get("review_type"))
+        elif _looks_non_abs:
+            logger.debug("Skipping explicitly non-ABS challenge uid=%s review_type=%r desc=%r", uid, review_type, desc)
 
         if not challenge.get("is_abs_pitch_challenge"):
             logger.debug("Skipping non-ABS challenge uid=%s review_type=%s", uid, challenge.get("review_type"))
