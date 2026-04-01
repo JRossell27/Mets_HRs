@@ -611,11 +611,11 @@ class MLBMonitor:
                 if challenge["is_abs_pitch_challenge"] and uid != f"{game_pk_str}_{at_bat_index}_abs":
                     # Keyword-scan path found this as ABS but used a playId-based
                     # uid.  Migrate to the stable at_bat_index uid so that
-                    # has_posted_discord works correctly across restarts and so
-                    # a later play_level_review detection of the same challenge
-                    # won't produce a new uid and re-post.
+                    # has_posted_discord and _session_posted_uids work correctly.
+                    # Intentionally do NOT pop the original uid: keeping it in
+                    # _seen_challenges means if the same pitch is found next poll,
+                    # emit_updates_only can suppress re-emission immediately.
                     stable_uid = f"{game_pk_str}_{at_bat_index}_abs"
-                    self._seen_challenges[game_pk].pop(uid, None)
                     self._seen_challenges[game_pk][stable_uid] = event_state
                     uid = stable_uid
                     challenge["uid"] = uid
