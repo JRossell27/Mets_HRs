@@ -149,7 +149,7 @@ async def poll_mlb():
     """Periodically poll MLB live feeds and post challenge alerts."""
     channel = bot.get_channel(CHANNEL_ID)
     if channel is None:
-        logger.warning("Could not find channel %s — make sure the bot has access.", CHANNEL_ID)
+        logger.warning("Could not find channel %s - make sure the bot has access.", CHANNEL_ID)
         return
 
     try:
@@ -165,7 +165,7 @@ async def poll_mlb():
             # Do not notify while review is pending; wait for confirmed result.
             logger.debug("Skipping in-progress challenge notification uid=%s", uid)
         else:
-            # Challenge resolved — record to tracker FIRST so stats are current
+            # Challenge resolved - record to tracker FIRST so stats are current
             try:
                 tracker.record_challenge(challenge)
                 _enrich_with_season_stats(challenge)
@@ -192,7 +192,7 @@ async def poll_mlb():
 @poll_mlb.before_loop
 async def before_poll():
     await bot.wait_until_ready()
-    logger.info("Bot ready — starting MLB polling every %ss", POLL_INTERVAL)
+    logger.info("Bot ready - starting MLB polling every %ss", POLL_INTERVAL)
 
 
 # ─── Bot events ──────────────────────────────────────────────────────────────
@@ -213,7 +213,7 @@ async def _run_backfill():
     """Run the season backfill in the background at startup."""
     try:
         recorded = await tracker.backfill_season(monitor)
-        logger.info("Season backfill finished — %d historical challenges loaded", recorded)
+        logger.info("Season backfill finished - %d historical challenges loaded", recorded)
     except Exception as exc:
         logger.error("Season backfill failed: %s", exc)
 
@@ -233,7 +233,7 @@ async def status(ctx):
     total = len(games)
     live = len(live_games)
 
-    lines = [f"**MLB Pitch Challenge Bot — Status**"]
+    lines = [f"**MLB Pitch Challenge Bot - Status**"]
     lines.append(f"Polling interval: every {POLL_INTERVAL}s")
     lines.append(f"Today's games: {total} total, {live} live")
 
@@ -336,7 +336,7 @@ async def diag_date(ctx, date_str: str = ""):
         ab = status.get("abstractGameState", "?")
         away = g.get("teams", {}).get("away", {}).get("team", {}).get("abbreviation", "?")
         home = g.get("teams", {}).get("home", {}).get("team", {}).get("abbreviation", "?")
-        lines.append(f"  `{g.get('gamePk')}` {away}@{home} — statusCode=`{sc}` abstractState=`{ab}`")
+        lines.append(f"  `{g.get('gamePk')}` {away}@{home} - statusCode=`{sc}` abstractState=`{ab}`")
     await ctx.send("\n".join(lines))
 
     final_games = [
@@ -344,7 +344,7 @@ async def diag_date(ctx, date_str: str = ""):
         if g.get("status", {}).get("abstractGameState") == "Final"
         or g.get("status", {}).get("statusCode") in final_codes
     ]
-    await ctx.send(f"{len(final_games)} game(s) considered final — fetching feeds…")
+    await ctx.send(f"{len(final_games)} game(s) considered final - fetching feeds…")
 
     total_challenges = []
     total_candidates = 0
@@ -425,10 +425,10 @@ async def help_bot(ctx):
     """Show available commands."""
     help_text = (
         "**MLB Pitch Challenge Bot Commands**\n\n"
-        "`!status` — Show today's games and live monitoring status\n"
-        "`!absstats` — Show the current ABS season challenge leaderboard\n"
-        "`!testchallenge` — (owner only) Send a test challenge message\n"
-        "`!help_bot` — Show this help message\n\n"
+        "`!status` - Show today's games and live monitoring status\n"
+        "`!absstats` - Show the current ABS season challenge leaderboard\n"
+        "`!testchallenge` - (owner only) Send a test challenge message\n"
+        "`!help_bot` - Show this help message\n\n"
         "The bot automatically monitors all MLB games and posts an alert "
         "with Twitter-ready text whenever a pitch challenge occurs, including "
         "the challenging player's season success rate.  After all games each "
@@ -444,7 +444,7 @@ _HTML_PANEL = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MLB Bot — Test Panel</title>
+  <title>MLB Bot - Test Panel</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -501,7 +501,7 @@ _HTML_PANEL = """<!DOCTYPE html>
 </head>
 <body>
 <div class="container">
-  <h1>⚾ MLB Pitch Challenge Bot — <span>Test Panel</span></h1>
+  <h1>⚾ MLB Pitch Challenge Bot - <span>Test Panel</span></h1>
 
   <div class="card" id="status-card">
     <h2>Bot Status</h2>
@@ -533,7 +533,7 @@ async function loadStatus() {
     const recapLabel = d.recap_posted_today ? '✅ Yes' : '❌ Not yet';
     card.innerHTML = `
       <h2>Bot Status</h2>
-      <p><span class="dot"></span><strong>Online</strong> — polling every ${d.poll_interval}s</p>
+      <p><span class="dot"></span><strong>Online</strong> - polling every ${d.poll_interval}s</p>
       <div class="status-row">
         <span class="badge">📅 ${d.today}</span>
         <span class="badge">🎮 Live games: ${d.live_games}</span>
@@ -619,7 +619,7 @@ async def _api_test_challenge(request):
     try:
         channel = bot.get_channel(CHANNEL_ID)
         if channel is None:
-            raise RuntimeError("Bot channel not found — is the bot connected?")
+            raise RuntimeError("Bot channel not found - is the bot connected?")
         fake = {
             "uid": "webtest_001",
             "game_pk": 999999,
@@ -680,7 +680,7 @@ async def _api_post_recap(request):
     try:
         channel = bot.get_channel(CHANNEL_ID)
         if channel is None:
-            raise RuntimeError("Bot channel not found — is the bot connected?")
+            raise RuntimeError("Bot channel not found - is the bot connected?")
         recap = tracker.generate_daily_recap()
         parts = await _send_chunked_message(channel, recap)
         return web.Response(
@@ -704,7 +704,7 @@ async def _api_run_backfill(request):
         return web.Response(
             text=json.dumps({
                 "ok": True,
-                "message": f"✅ Backfill complete — {recorded} new challenges recorded.",
+                "message": f"✅ Backfill complete - {recorded} new challenges recorded.",
             }),
             content_type="application/json",
         )

@@ -125,7 +125,7 @@ def format_challenge_message(challenge: dict) -> str:
     result = _result_line(challenge)
     pitch_line = _pitch_line(pitch_info) if pitch_info else "No pitch data available"
     tags = _hashtags(away_abbr, home_abbr)
-    score_str = f"{away} {away_score} — {home_score} {home}"
+    score_str = f"{away} {away_score} - {home_score} {home}"
     inning_str = f"{half} {inning}"
     count_str = f"{balls}-{strikes}, {outs} out{'s' if outs != 1 else ''}"
     original_call = _normalize_call(pitch_info.get("original_call", ""))
@@ -168,10 +168,10 @@ def format_update_message(challenge: dict) -> str:
     tags = _hashtags(away_abbr, home_abbr)
 
     twitter_text = (
-        f"⚾ {review_type.upper()} — RESULT\n"
+        f"⚾ {review_type.upper()} - RESULT\n"
         f"{result}\n"
         f"\n"
-        f"🏟 {away} {away_score} — {home_score} {home} | {half} {inning}\n"
+        f"🏟 {away} {away_score} - {home_score} {home} | {half} {inning}\n"
         f"\n{tags}"
     )
 

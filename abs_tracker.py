@@ -171,7 +171,7 @@ class ABSSeasonTracker:
         challenger_role = challenge.get("challenger_role", "").strip()
         if not challenger_name or not challenger_role:
             logger.debug(
-                "Skipping challenge — missing challenger info (uid=%s name=%r role=%r)",
+                "Skipping challenge - missing challenger info (uid=%s name=%r role=%r)",
                 uid, challenger_name, challenger_role,
             )
             return False
@@ -328,7 +328,7 @@ class ABSSeasonTracker:
             logger.info("Backfill %s: %d games found", date_str, len(games))
 
             # Log the first game's raw status so we can see what the API
-            # returns — useful if games keep being skipped unexpectedly.
+            # returns - useful if games keep being skipped unexpectedly.
             if games:
                 logger.info(
                     "Backfill %s sample game status: %s",
@@ -346,7 +346,7 @@ class ABSSeasonTracker:
                 # versions and caused all games to be skipped previously).
                 feed = await monitor.get_live_feed(game_pk)
                 if not feed:
-                    logger.warning("No feed for game %s — skipping", game_pk)
+                    logger.warning("No feed for game %s - skipping", game_pk)
                     continue
 
                 # If there are no plays the game was postponed/cancelled.
@@ -357,7 +357,7 @@ class ABSSeasonTracker:
                 )
                 if not all_plays:
                     logger.debug(
-                        "Game %s has no plays (postponed/cancelled) — marking processed",
+                        "Game %s has no plays (postponed/cancelled) - marking processed",
                         game_pk,
                     )
                     self.mark_game_processed(game_pk)
@@ -386,7 +386,7 @@ class ABSSeasonTracker:
             current += timedelta(days=1)
 
         logger.info(
-            "ABS backfill complete — scanned %d games, found %d challenge events, "
+            "ABS backfill complete - scanned %d games, found %d challenge events, "
             "recorded %d new challenges",
             games_scanned, challenges_found, recorded,
         )
