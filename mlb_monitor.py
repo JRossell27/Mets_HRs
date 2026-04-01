@@ -598,20 +598,6 @@ class MLBMonitor:
                         challenger_role = "batter"
                         challenging_team = batting_team
 
-                # For ABS pitch challenges, override the original_call and pitch
-                # code in pitch_info using challengeTeamId.  The 2026 API may
-                # store the post-overturn outcome in the pitch's call field
-                # rather than the original disputed call, and priority 4 pitch-
-                # finding may land on the wrong pitch.  The original call is
-                # definitionally determined by who issued the challenge:
-                #   Batting team challenged → they disputed a Called Strike
-                #   Fielding team challenged → they disputed a Ball
-                if (review_type_raw or "").lower() in ("mj", "pitchchallenge") and pitch_info:
-                    if challenging_team == batting_team:
-                        pitch_info = {**pitch_info, "original_call": "Called Strike", "code": "C"}
-                    elif challenging_team == fielding_team:
-                        pitch_info = {**pitch_info, "original_call": "Ball", "code": "B"}
-
                 challenge = {
                     "uid": uid,
                     "game_pk": game_pk,
