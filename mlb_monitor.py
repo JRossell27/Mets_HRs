@@ -350,10 +350,25 @@ class MLBMonitor:
                             specific_idx = idx
                             break
                 if specific_idx is None:
+                    # Prefer the last CALLED pitch (B or C) — ABS challenges are
+                    # always on called pitches, so this avoids landing on a later
+                    # swinging strike or foul if the at-bat continued after the review.
                     for idx in range(len(play_events) - 1, -1, -1):
-                        if play_events[idx].get("isPitch", False):
-                            specific_idx = idx
-                            break
+                        pe = play_events[idx]
+                        if pe.get("isPitch", False):
+                            call_code = (
+                                pe.get("details", {}).get("call", {}).get("code", "")
+                                or pe.get("details", {}).get("code", "")
+                            )
+                            if call_code in ("B", "C"):
+                                specific_idx = idx
+                                break
+                    # If no called pitch found, fall back to any pitch
+                    if specific_idx is None:
+                        for idx in range(len(play_events) - 1, -1, -1):
+                            if play_events[idx].get("isPitch", False):
+                                specific_idx = idx
+                                break
                 candidate_events = (
                     [(specific_idx, play_events[specific_idx])]
                     if specific_idx is not None else []
@@ -447,22 +462,21 @@ class MLBMonitor:
                         "original_call": original_call,
                     }
 
-                # Use the original pitch call as the authoritative signal for
-                # which team challenged.  In 2026 ABS:
-                #   Called Strike (details.code "C") → batter disputed → batting team
-                #   Ball          (details.code "B") → catcher disputed → fielding team
-                # This is more reliable than challengeTeamId, which the API
-                # frequently omits or returns with a type mismatch.
+                # Only use pitch call code as a FALLBACK when challengeTeamId
+                # did not resolve.  Overriding a correctly resolved challengeTeamId
+                # with pitch code is dangerous: if the wrong pitch was found (e.g.
+                # the last ball in an at-bat that continued after an upheld ABS
+                # challenge), code "B" would incorrectly flip batting → fielding.
                 _ev_is_top = play.get("about", {}).get("isTopInning", True)
                 _ev_batting = away_team if _ev_is_top else home_team
                 _ev_fielding = home_team if _ev_is_top else away_team
-                oc_lower = (pitch_info.get("original_call", "") or "").lower()
-                pc = pitch_info.get("code", "") if pitch_info else ""
-                if "called strike" in oc_lower or pc == "C":
-                    challenging_team = _ev_batting
-                elif oc_lower.startswith("ball") or pc == "B":
-                    challenging_team = _ev_fielding
-                # else: keep challengeTeamId-resolved value (may be "Unknown Team" → filtered later)
+                if challenging_team == "Unknown Team":
+                    oc_lower = (pitch_info.get("original_call", "") or "").lower()
+                    pc = pitch_info.get("code", "") if pitch_info else ""
+                    if "called strike" in oc_lower or pc == "C":
+                        challenging_team = _ev_batting
+                    elif oc_lower.startswith("ball") or pc == "B":
+                        challenging_team = _ev_fielding
 
                 # Use reviewed pitch identity as the primary UID so challenge
                 # start/result events for the same pitch collapse into one.
