@@ -28,6 +28,7 @@ CHALLENGE_EVENT_KEYWORDS = [
 
 # Review types mapped to human-readable labels
 REVIEW_TYPE_LABELS = {
+    "MJ": "Pitch Challenge (ABS)",
     "pitchChallenge": "Pitch Challenge (ABS)",
     "managerChallenge": "Manager Challenge",
     "umpireReview": "Umpire Review",
@@ -131,7 +132,9 @@ def _is_abs_pitch_challenge(
     Strict ABS challenge classifier used for season stat recording.
     """
     rt = (review_type_raw or "").lower()
-    if rt == "pitchchallenge":
+    # "MJ" is the 2026 Stats API code for "Player challenge: Pitch Result" (ABS).
+    # "pitchChallenge" appears in some older/alternate feed shapes.
+    if rt in ("mj", "pitchchallenge"):
         return True
 
     text = " ".join([
@@ -345,13 +348,23 @@ class MLBMonitor:
                 pitch_info = {}
                 if last_pitch:
                     pitch_details = last_pitch.get("pitchData", {})
-                    pitch_type_code = last_pitch.get("details", {}).get("type", {}).get("code", "")
+                    lp_details = last_pitch.get("details", {})
+                    pitch_type_code = lp_details.get("type", {}).get("code", "")
                     pitch_type = PITCH_TYPE_LABELS.get(pitch_type_code, pitch_type_code or "Unknown")
                     speed = pitch_details.get("startSpeed")
                     zone = pitch_details.get("zone")
                     zone_desc = ZONE_DESCRIPTIONS.get(zone, f"Zone {zone}" if zone else "Unknown Zone")
-                    original_call = last_pitch.get("details", {}).get("description", "")
-                    pitch_call_code = last_pitch.get("details", {}).get("code", "")
+                    # In 2026 API, the umpire/ABS call lives under details.call.
+                    # Fall back to details.description for older feed shapes.
+                    call_obj = lp_details.get("call", {})
+                    original_call = (
+                        call_obj.get("description", "")
+                        or lp_details.get("description", "")
+                    )
+                    pitch_call_code = (
+                        call_obj.get("code", "")
+                        or lp_details.get("code", "")
+                    )
                     pitch_info = {
                         "type": pitch_type,
                         "type_code": pitch_type_code,
@@ -414,15 +427,30 @@ class MLBMonitor:
                 event_time = play_event.get("startTime", "")
 
                 # Determine who issued the challenge and their role.
-                # Batting team challenge → batter; fielding team → catcher (or
-                # pitcher as fallback if catcher cannot be resolved from boxscore).
+                # The 2026 Stats API often provides the challenger directly on
+                # reviewDetails.player.  Use that when available; otherwise fall
+                # back to team-based inference.
+                api_challenger = review.get("player", {}).get("fullName", "")
                 batting_team = away_team if is_top else home_team
                 fielding_team_key = "home" if is_top else "away"
-                if challenging_team == batting_team:
+                catcher = self._get_active_catcher(feed, fielding_team_key)
+
+                if api_challenger:
+                    challenger_name = api_challenger
+                    if api_challenger == batter_name:
+                        challenger_role = "batter"
+                    elif catcher and api_challenger == catcher:
+                        challenger_role = "catcher"
+                    elif api_challenger == pitcher_name:
+                        challenger_role = "pitcher"
+                    else:
+                        # Name provided but doesn't match known players —
+                        # infer role from which team challenged.
+                        challenger_role = "batter" if challenging_team == batting_team else "catcher"
+                elif challenging_team == batting_team:
                     challenger_name = batter_name
                     challenger_role = "batter"
                 else:
-                    catcher = self._get_active_catcher(feed, fielding_team_key)
                     if catcher:
                         challenger_name = catcher
                         challenger_role = "catcher"
