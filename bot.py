@@ -161,8 +161,25 @@ async def poll_mlb():
     for challenge in challenges:
         uid = challenge["uid"]
 
+        pitch_info = challenge.get("pitch_info", {}) or {}
+        raw_call = (pitch_info.get("original_call", "") or "").lower()
+        pitch_code = (pitch_info.get("code", "") or "")
+        # Only post if the pitch is a called ball or called strike.
+        # A non-empty pitch_code that isn't B/C means we found the wrong pitch
+        # (swinging strike, foul, HBP, etc.) — don't post that noise.
+        # An empty pitch_code with a non-ball/non-called-strike description is
+        # the same situation. Empty pitch info is allowed (trust is_abs_pitch_challenge).
+        _pitch_is_called = (
+            pitch_code in ("B", "C")
+            or (not pitch_code and (not raw_call
+                                    or "called strike" in raw_call
+                                    or raw_call.startswith("ball")))
+        )
+
         if not challenge.get("is_abs_pitch_challenge"):
             logger.debug("Skipping non-ABS challenge uid=%s review_type=%s", uid, challenge.get("review_type"))
+        elif not _pitch_is_called:
+            logger.debug("Skipping non-called-pitch ABS uid=%s code=%r call=%r", uid, pitch_code, raw_call)
         elif challenge["is_in_progress"]:
             logger.debug("Skipping in-progress challenge notification uid=%s", uid)
         elif tracker.has_posted_discord(uid):
@@ -170,7 +187,6 @@ async def poll_mlb():
         else:
             try:
                 tracker.record_challenge(challenge)
-                _enrich_with_season_stats(challenge)
                 msg_text = format_challenge_message(challenge)
                 await channel.send(msg_text)
                 tracker.mark_discord_posted(uid)

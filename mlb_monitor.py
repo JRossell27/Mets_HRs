@@ -603,6 +603,18 @@ class MLBMonitor:
                         review_type_raw, details, play_event, play, pitch_info
                     ),
                 }
+                # Override UID to the stable at_bat_index form for ALL ABS
+                # challenges regardless of which detection path found them.
+                # This prevents a race condition where a challenge first detected
+                # via keyword scanning (UID = …_event_idx) later re-appears via
+                # play-level reviewDetails (UID = …_abs) and gets re-posted.
+                if challenge["is_abs_pitch_challenge"]:
+                    stable_uid = f"{game_pk_str}_{at_bat_index}_abs"
+                    self._seen_challenges[game_pk].pop(uid, None)
+                    uid = stable_uid
+                    challenge["uid"] = uid
+                    self._seen_challenges[game_pk].setdefault(uid, event_state)
+
                 new_challenges.append(challenge)
 
         return new_challenges
