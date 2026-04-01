@@ -52,9 +52,10 @@ def _result_call(challenge: dict) -> str:
             return "Ball"
         if original == "Ball":
             return "Strike"
+        return "Overturned"   # resolved but original call unknown
     if overturned is False:
-        return original
-    return "Pending"
+        return original or "Upheld"
+    return "Pending"          # only when is_overturned is None
 
 
 def _pitch_line(pitch_info: dict) -> str:
@@ -127,7 +128,7 @@ def format_challenge_message(challenge: dict) -> str:
     original_call = _normalize_call(pitch_info.get("original_call", ""))
     result_call = _result_call(challenge)
 
-    stat_line = _challenger_stat_line(challenge)
+    stat_line = ""  # season stats removed from live posts
 
     twitter_text = (
         f"ABS CHALLENGE INITIATED\n"
