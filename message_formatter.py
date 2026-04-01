@@ -64,10 +64,6 @@ def _pitch_line(pitch_info: dict) -> str:
         parts.append(pitch_info["type"])
     if pitch_info.get("speed"):
         parts.append(f"{pitch_info['speed']:.1f} mph")
-    if pitch_info.get("zone_desc"):
-        parts.append(pitch_info["zone_desc"])
-    if pitch_info.get("original_call"):
-        parts.append(f"called {pitch_info['original_call']}")
     return " | ".join(parts) if parts else "Pitch details unavailable"
 
 
@@ -140,9 +136,6 @@ def format_challenge_message(challenge: dict) -> str:
         f"🏟 {score_str} | {inning_str}\n"
         f"⚡ {pitcher} → {batter} | {count_str}\n"
         f"📍 {pitch_line}\n"
-        f"📢 Challenged by: {challenging_team}\n"
-        f"\n"
-        f"🏟 {venue}\n"
         f"\n{tags}"
     )
 
