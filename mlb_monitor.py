@@ -140,6 +140,30 @@ def _is_abs_pitch_challenge(
     rt = (review_type_raw or "").lower()
     if rt == "pitchchallenge":
         return True
+        return True
+
+    # Also catch challenges stored directly via reviewDetails in any location.
+    review = _extract_review_details(event_details, play_event, play)
+    if review.get("reviewType") or review.get("inProgress") is not None:
+        return True
+
+    # Extra hints observed in some feeds.
+    flags = play_event.get("flags", {})
+    if isinstance(flags, dict) and (flags.get("isChallenge") or flags.get("isReview")):
+        return True
+
+    return False
+
+
+def _is_abs_pitch_challenge(
+    review_type_raw: str, details: dict, play_event: dict, play: dict, pitch_info: dict
+) -> bool:
+    """
+    Strict ABS challenge classifier used for season stat recording.
+    """
+    rt = (review_type_raw or "").lower()
+    if rt == "pitchchallenge":
+        return True
 
     text = " ".join([
         str(details.get("event", "")),
@@ -194,6 +218,15 @@ def _is_abs_pitch_challenge(
         str(play.get("result", {}).get("description", "")),
     ]).lower()
 
+    # MLB ABS narration format example:
+    # "Francisco Alvarez challenged ... call on the field was overturned..."
+    abs_text_markers = (
+        "challenged" in text
+        and "call on the field was" in text
+        and any(k in text for k in ("overturned", "upheld", "stands"))
+        and any(k in text for k in ("called strike", "called ball", "strikes", "balls"))
+    )
+    if abs_text_markers and "manager challenge" not in text and "replay review" not in text:
     if any(k in text for k in ABS_EVENT_KEYWORDS):
         return True
 
@@ -380,6 +413,15 @@ class MLBMonitor:
                     is_in_progress = True
                 is_in_progress = review.get("inProgress", False)
                 is_overturned = review.get("isOverturned", None)
+                if is_overturned is None:
+                    if "overturned" in description_text:
+                        is_overturned = True
+                    elif any(k in description_text for k in ("upheld", "stands")):
+                        is_overturned = False
+                if not is_in_progress and "in progress" in description_text:
+                    is_in_progress = True
+                is_in_progress = review.get("inProgress", False)
+                is_overturned = review.get("isOverturned", None)
                 event_state = (
                     "in_progress"
                     if is_in_progress
@@ -439,6 +481,33 @@ class MLBMonitor:
                         "zone_desc": zone_desc,
                         "original_call": original_call,
                     }
+
+                # Use reviewed pitch identity as the primary UID so challenge
+                # start/result events for the same pitch collapse into one.
+                reviewed_play_id = (last_pitch or {}).get("playId")
+                event_play_id = play_event.get("playId")
+                if reviewed_play_id:
+                    uid = f"{game_pk_str}_{at_bat_index}_{reviewed_play_id}"
+                elif event_play_id:
+                    uid = f"{game_pk_str}_{at_bat_index}_{event_play_id}"
+                else:
+                    uid = f"{game_pk_str}_{at_bat_index}_{event_idx}"
+
+                event_state = (
+                    "in_progress"
+                    if is_in_progress
+                    else (
+                        "resolved_overturned"
+                        if is_overturned is True
+                        else "resolved_upheld" if is_overturned is False else "resolved_unknown"
+                    )
+                )
+
+                previous_state = self._seen_challenges[game_pk].get(uid)
+                self._seen_challenges[game_pk][uid] = event_state
+
+                if emit_updates_only and previous_state == event_state:
+                    continue
 
                 count = play.get("count", {})
                 play_inning = play.get("about", {}).get("inning", current_inning)

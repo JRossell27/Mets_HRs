@@ -33,7 +33,7 @@ from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
 from abs_tracker import ABSSeasonTracker
-from message_formatter import format_challenge_message, format_update_message
+from message_formatter import format_challenge_message
 from mlb_monitor import MLBMonitor
 
 load_dotenv()
@@ -71,11 +71,6 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 monitor = MLBMonitor()
 tracker = ABSSeasonTracker()
-
-# Track in-progress challenges so we can send result updates.
-# {uid: discord.Message}
-pending_challenges: dict[str, discord.Message] = {}
-
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -163,29 +158,16 @@ async def poll_mlb():
         uid = challenge["uid"]
 
         if challenge["is_in_progress"]:
-            # Send an "in progress" message and save it for later editing
-            try:
-                msg_text = format_challenge_message(challenge)
-                msg = await channel.send(msg_text)
-                pending_challenges[uid] = msg
-                logger.info("Challenge detected (in progress): %s", uid)
-            except Exception as exc:
-                logger.error("Failed to send challenge message: %s", exc)
+            # Do not notify while review is pending; wait for confirmed result.
+            logger.debug("Skipping in-progress challenge notification uid=%s", uid)
         else:
             # Challenge resolved — record to tracker FIRST so stats are current
             try:
                 tracker.record_challenge(challenge)
                 _enrich_with_season_stats(challenge)
-
-                if uid in pending_challenges:
-                    old_msg = pending_challenges.pop(uid)
-                    update_text = format_challenge_message(challenge)
-                    await old_msg.edit(content=update_text)
-                    logger.info("Challenge resolved (edited message): %s", uid)
-                else:
-                    msg_text = format_challenge_message(challenge)
-                    await channel.send(msg_text)
-                    logger.info("Challenge resolved (new message): %s", uid)
+                msg_text = format_challenge_message(challenge)
+                await channel.send(msg_text)
+                logger.info("Challenge resolved (single message): %s", uid)
             except Exception as exc:
                 logger.error("Failed to send/edit challenge message: %s", exc)
 

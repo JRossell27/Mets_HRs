@@ -28,6 +28,7 @@ DATA_FILE = _DATA_DIR / "abs_season_data.json"
 
 # Minimum challenges a player needs to appear in the leaderboard.
 MIN_CHALLENGES = 3
+CLASSIFIER_VERSION = 5
 CLASSIFIER_VERSION = 4
 CLASSIFIER_VERSION = 2
 
@@ -154,6 +155,18 @@ class ABSSeasonTracker:
                 "Skipping non-ABS/ambiguous challenge uid=%s review_type=%s",
                 uid, review_type,
             )
+            return False
+        if challenge.get("challenging_team") in ("", "Unknown Team"):
+            logger.debug("Skipping challenge with unknown challenging team uid=%s", uid)
+            return False
+        if challenge.get("challenger_role") not in ("batter", "catcher", "pitcher"):
+            logger.debug("Skipping challenge with unsupported role uid=%s", uid)
+            return False
+        original_call = (
+            challenge.get("pitch_info", {}).get("original_call", "") or ""
+        ).lower()
+        if not any(k in original_call for k in ("called strike", "called ball", "ball")):
+            logger.debug("Skipping non-called-pitch challenge uid=%s call=%r", uid, original_call)
             return False
 
         challenger_name = challenge.get("challenger_name", "").strip()
