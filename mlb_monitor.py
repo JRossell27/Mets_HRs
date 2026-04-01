@@ -483,6 +483,7 @@ class MLBMonitor:
                 # back to team-based inference.
                 api_challenger = review.get("player", {}).get("fullName", "")
                 batting_team = away_team if is_top else home_team
+                fielding_team = home_team if is_top else away_team
                 fielding_team_key = "home" if is_top else "away"
                 catcher = self._get_active_catcher(feed, fielding_team_key)
 
@@ -490,13 +491,16 @@ class MLBMonitor:
                     challenger_name = api_challenger
                     if api_challenger == batter_name:
                         challenger_role = "batter"
+                        challenging_team = batting_team  # always correct for batter
                     elif catcher and api_challenger == catcher:
                         challenger_role = "catcher"
+                        challenging_team = fielding_team  # always correct for catcher
                     elif api_challenger == pitcher_name:
                         challenger_role = "pitcher"
+                        challenging_team = fielding_team  # always correct for pitcher
                     else:
-                        # Name provided but doesn't match known players —
-                        # infer role from which team challenged.
+                        # Name provided but doesn't match known players;
+                        # use pitch-type inference to assign team and role.
                         challenger_role = "batter" if challenging_team == batting_team else "catcher"
                 elif challenging_team == batting_team:
                     challenger_name = batter_name
@@ -508,6 +512,7 @@ class MLBMonitor:
                     else:
                         challenger_name = pitcher_name
                         challenger_role = "pitcher"
+                    challenging_team = fielding_team  # ensure fielder gets their own team
 
                 challenge = {
                     "uid": uid,

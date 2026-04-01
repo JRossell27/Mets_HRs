@@ -127,6 +127,8 @@ def format_challenge_message(challenge: dict) -> str:
     original_call = _normalize_call(pitch_info.get("original_call", ""))
     result_call = _result_call(challenge)
 
+    stat_line = _challenger_stat_line(challenge)
+
     twitter_text = (
         f"ABS CHALLENGE INITIATED\n"
         f"{result}\n"
@@ -136,7 +138,8 @@ def format_challenge_message(challenge: dict) -> str:
         f"🏟 {score_str} | {inning_str}\n"
         f"⚡ {pitcher} → {batter} | {count_str}\n"
         f"📍 {pitch_line}\n"
-        f"\n{tags}"
+        + (f"{stat_line}\n" if stat_line else "")
+        + f"\n{tags}"
     )
 
     discord_message = f"```\n{twitter_text}\n```"
