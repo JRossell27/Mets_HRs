@@ -101,7 +101,9 @@ class ABSSeasonTracker:
             self.data["recorded_challenge_uids"] = []
             self.data["processed_game_pks"] = []
             self.data["daily_recap_posted"] = []
-            self.data["posted_discord_uids"] = []
+            # NOTE: posted_discord_uids is intentionally NOT cleared here.
+            # Clearing it would cause every previously-posted challenge to be
+            # re-posted on the next startup, flooding Discord.
             self.data["last_updated"] = None
             self._save()
 

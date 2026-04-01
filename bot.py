@@ -165,15 +165,17 @@ async def poll_mlb():
         raw_call = (pitch_info.get("original_call", "") or "").lower()
         pitch_code = (pitch_info.get("code", "") or "")
         # Only post if the pitch is a called ball or called strike.
-        # A non-empty pitch_code that isn't B/C means we found the wrong pitch
-        # (swinging strike, foul, HBP, etc.) — don't post that noise.
-        # An empty pitch_code with a non-ball/non-called-strike description is
-        # the same situation. Empty pitch info is allowed (trust is_abs_pitch_challenge).
+        # Explicit deny: HBP, swinging strike, foul, in-play — these are never
+        # ABS-challengeable and indicate the wrong pitch was found in the feed.
+        _BLOCKED_CALLS = ("hit by pitch", "swinging strike", "foul", "in play")
         _pitch_is_called = (
-            pitch_code in ("B", "C")
-            or (not pitch_code and (not raw_call
-                                    or "called strike" in raw_call
-                                    or raw_call.startswith("ball")))
+            not any(s in raw_call for s in _BLOCKED_CALLS)
+            and (
+                pitch_code in ("B", "C")
+                or (not pitch_code and (not raw_call
+                                        or "called strike" in raw_call
+                                        or raw_call.startswith("ball")))
+            )
         )
 
         if not challenge.get("is_abs_pitch_challenge"):
@@ -215,6 +217,39 @@ async def before_poll():
 
 
 # ─── Bot events ──────────────────────────────────────────────────────────────
+async def _initialize_discord_post_state():
+    """
+    On startup, pre-mark every currently-resolved ABS challenge for today
+    as already posted WITHOUT sending anything to Discord.
+
+    This prevents a flood on redeploy: any challenge that already happened
+    today is silently marked so the poll loop ignores it and only posts
+    genuinely new challenges that arrive after this coroutine completes.
+    """
+    try:
+        games = await monitor.get_todays_games()
+        marked = 0
+        for game in games:
+            game_pk = game.get("gamePk")
+            if not game_pk:
+                continue
+            feed = await monitor.get_live_feed(game_pk)
+            if not feed:
+                continue
+            challenges = monitor.extract_all_challenges_from_feed(feed, game_pk)
+            for ch in challenges:
+                uid = ch.get("uid", "")
+                if uid and not ch.get("is_in_progress") and ch.get("is_abs_pitch_challenge"):
+                    if not tracker.has_posted_discord(uid):
+                        tracker.mark_discord_posted(uid)
+                        marked += 1
+        logger.info(
+            "Startup: pre-marked %d challenge UIDs as posted (flood prevention)", marked
+        )
+    except Exception as exc:
+        logger.error("Startup discord state initialization failed: %s", exc)
+
+
 @bot.event
 async def on_ready():
     logger.info("Logged in as %s (ID: %s)", bot.user, bot.user.id)
@@ -223,6 +258,11 @@ async def on_ready():
     # Backfill historical ABS data from season start in the background so
     # the bot is ready to poll immediately without waiting for backfill.
     asyncio.create_task(_run_backfill())
+
+    # Pre-mark all resolved challenges seen so far today so the poll loop
+    # doesn't flood Discord on redeploy.  Awaited so it completes before
+    # the poll loop starts.
+    await _initialize_discord_post_state()
 
     if not poll_mlb.is_running():
         poll_mlb.start()
