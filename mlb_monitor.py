@@ -311,7 +311,7 @@ class MLBMonitor:
             play_level_review = play.get("reviewDetails") or {}
             play_review_type = (play_level_review.get("reviewType", "") or "").lower()
 
-            if play_review_type in _ABS_TYPES:
+            if bool(play_level_review):
                 # Find the specific challenged pitch event using the priority
                 # documented by ABS-Auditor / Stats API community notes:
                 # 1. pitch event whose own reviewDetails matches the play review
@@ -478,41 +478,52 @@ class MLBMonitor:
                 event_time = play_event.get("startTime", "")
 
                 # Determine who issued the challenge and their role.
-                # The 2026 Stats API often provides the challenger directly on
-                # reviewDetails.player.  Use that when available; otherwise fall
-                # back to team-based inference.
+                # Pitch code is the authoritative signal for WHICH SIDE challenged:
+                #   Called Strike (code "C") → batter challenged → batting team
+                #   Ball          (code "B") → fielder challenged → fielding team
+                # api_challenger from reviewDetails.player is only used to identify
+                # the specific individual (catcher vs pitcher), NOT to determine side.
                 api_challenger = review.get("player", {}).get("fullName", "")
                 batting_team = away_team if is_top else home_team
                 fielding_team = home_team if is_top else away_team
                 fielding_team_key = "home" if is_top else "away"
                 catcher = self._get_active_catcher(feed, fielding_team_key)
 
-                if api_challenger:
-                    challenger_name = api_challenger
-                    if api_challenger == batter_name:
-                        challenger_role = "batter"
-                        challenging_team = batting_team  # always correct for batter
-                    elif catcher and api_challenger == catcher:
-                        challenger_role = "catcher"
-                        challenging_team = fielding_team  # always correct for catcher
-                    elif api_challenger == pitcher_name:
-                        challenger_role = "pitcher"
-                        challenging_team = fielding_team  # always correct for pitcher
-                    else:
-                        # Name provided but doesn't match known players;
-                        # use pitch-type inference to assign team and role.
-                        challenger_role = "batter" if challenging_team == batting_team else "catcher"
-                elif challenging_team == batting_team:
+                if challenging_team == batting_team:
+                    # Called Strike → batter challenged
                     challenger_name = batter_name
                     challenger_role = "batter"
-                else:
-                    if catcher:
+                elif challenging_team == fielding_team:
+                    # Ball → fielder (catcher or pitcher) challenged
+                    if api_challenger and api_challenger != batter_name:
+                        challenger_name = api_challenger
+                        if api_challenger == pitcher_name:
+                            challenger_role = "pitcher"
+                        else:
+                            challenger_role = "catcher"
+                    elif catcher:
                         challenger_name = catcher
                         challenger_role = "catcher"
                     else:
                         challenger_name = pitcher_name
                         challenger_role = "pitcher"
-                    challenging_team = fielding_team  # ensure fielder gets their own team
+                else:
+                    # challenging_team is "Unknown Team" — best-effort fallback
+                    if api_challenger:
+                        challenger_name = api_challenger
+                        if api_challenger == batter_name:
+                            challenger_role = "batter"
+                            challenging_team = batting_team
+                        elif api_challenger == pitcher_name:
+                            challenger_role = "pitcher"
+                            challenging_team = fielding_team
+                        else:
+                            challenger_role = "catcher"
+                            challenging_team = fielding_team
+                    else:
+                        challenger_name = batter_name
+                        challenger_role = "batter"
+                        challenging_team = batting_team
 
                 challenge = {
                     "uid": uid,
