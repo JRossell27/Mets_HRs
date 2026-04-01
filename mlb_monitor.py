@@ -140,6 +140,50 @@ def _is_abs_pitch_challenge(
     rt = (review_type_raw or "").lower()
     if rt == "pitchchallenge":
         return True
+
+    text = " ".join([
+        str(details.get("event", "")),
+        str(details.get("eventType", "")),
+        str(details.get("description", "")),
+        str(play_event.get("description", "")),
+        str(play.get("result", {}).get("event", "")),
+        str(play.get("result", {}).get("eventType", "")),
+        str(play.get("result", {}).get("description", "")),
+    ]).lower()
+
+    # MLB ABS narration format example:
+    # "Francisco Alvarez challenged ... call on the field was overturned..."
+    abs_text_markers = (
+        "challenged" in text
+        and "call on the field was" in text
+        and any(k in text for k in ("overturned", "upheld", "stands"))
+        and any(k in text for k in ("called strike", "called ball", "strikes", "balls"))
+    )
+    if abs_text_markers and "manager challenge" not in text and "replay review" not in text:
+        return True
+
+    # Also catch challenges stored directly via reviewDetails in any location.
+    review = _extract_review_details(event_details, play_event, play)
+    if review.get("reviewType") or review.get("inProgress") is not None:
+        return True
+
+    # Extra hints observed in some feeds.
+    flags = play_event.get("flags", {})
+    if isinstance(flags, dict) and (flags.get("isChallenge") or flags.get("isReview")):
+        return True
+
+    return False
+
+
+def _is_abs_pitch_challenge(
+    review_type_raw: str, details: dict, play_event: dict, play: dict, pitch_info: dict
+) -> bool:
+    """
+    Strict ABS challenge classifier used for season stat recording.
+    """
+    rt = (review_type_raw or "").lower()
+    if rt == "pitchchallenge":
+        return True
         return True
 
     # Also catch challenges stored directly via reviewDetails in any location.

@@ -54,15 +54,21 @@ logging.basicConfig(
 logger = logging.getLogger("pitch_challenge_bot")
 
 # ─── Validation ───────────────────────────────────────────────────────────────
-if not DISCORD_TOKEN:
-    logger.error("DISCORD_TOKEN is not set. Add it to your .env file.")
-    sys.exit(1)
+if DISCORD_TOKEN:
+    BOT_TOKEN_VALID = True
+else:
+    BOT_TOKEN_VALID = False
+    logger.warning("DISCORD_TOKEN is not set. Bot will run in web-panel-only mode.")
 
 try:
     CHANNEL_ID = int(CHANNEL_ID_STR)
+    CHANNEL_VALID = True
 except ValueError:
-    logger.error("CHANNEL_ID is missing or not a valid integer.")
-    sys.exit(1)
+    CHANNEL_ID = 0
+    CHANNEL_VALID = False
+    logger.warning("CHANNEL_ID is missing/invalid. Bot will run in web-panel-only mode.")
+
+BOT_RUNTIME_ENABLED = BOT_TOKEN_VALID and CHANNEL_VALID
 
 # ─── Bot Setup ────────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
@@ -729,8 +735,12 @@ async def start_health_server():
 # ─── Entry point ─────────────────────────────────────────────────────────────
 async def main():
     asyncio.create_task(start_health_server())
-    async with bot:
-        await bot.start(DISCORD_TOKEN)
+    if BOT_RUNTIME_ENABLED:
+        async with bot:
+            await bot.start(DISCORD_TOKEN)
+    else:
+        # Keep the process alive so Fly health checks succeed while config is fixed.
+        await asyncio.Event().wait()
 
 if __name__ == "__main__":
     try:
