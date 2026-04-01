@@ -314,15 +314,36 @@ class MLBMonitor:
             if bool(play_level_review):
                 # Find the specific challenged pitch event using the priority
                 # documented by ABS-Auditor / Stats API community notes:
-                # 1. pitch event whose own reviewDetails matches the play review
-                # 2. pitch event with details.hasReview == True
-                # 3. last pitch event in the play (last resort)
+                # 1. Event whose own reviewDetails has an ABS reviewType ("MJ")
+                # 2. Non-pitch event with challenge keywords in its own details
+                #    (dedicated "Pitch Challenge" event the API often inserts;
+                #    searching backwards from it then finds the challenged pitch)
+                # 3. Event with details.hasReview == True
+                # 4. Last pitch event in the play (last resort)
+                #
+                # Note: we deliberately avoid using _is_challenge_event here
+                # because play-level reviewDetails propagates to ALL events, so
+                # _is_challenge_event would return True for every event.
                 specific_idx = None
                 for idx, pe in enumerate(play_events):
                     pe_rv_type = (pe.get("reviewDetails", {}).get("reviewType", "") or "").lower()
                     if pe_rv_type in _ABS_TYPES:
                         specific_idx = idx
                         break
+                if specific_idx is None:
+                    # Look for a dedicated non-pitch challenge/review event
+                    for idx, pe in enumerate(play_events):
+                        if pe.get("isPitch", False):
+                            continue  # skip pitch events for this pass
+                        pe_details = pe.get("details", {})
+                        if _has_challenge_keyword(
+                            pe_details.get("event", ""),
+                            pe_details.get("eventType", ""),
+                            pe_details.get("description", ""),
+                            pe.get("description", ""),
+                        ):
+                            specific_idx = idx
+                            break
                 if specific_idx is None:
                     for idx, pe in enumerate(play_events):
                         if pe.get("details", {}).get("hasReview"):
