@@ -195,12 +195,14 @@ async def poll_mlb():
         elif tracker.has_posted_discord(uid):
             logger.debug("Skipping already-posted challenge uid=%s", uid)
         else:
+            # Add to session set BEFORE sending so that even if channel.send
+            # partially succeeds but raises (network hiccup), we never re-post.
+            _session_posted_uids.add(uid)
             try:
                 tracker.record_challenge(challenge)
                 msg_text = format_challenge_message(challenge)
                 await channel.send(msg_text)
                 tracker.mark_discord_posted(uid)
-                _session_posted_uids.add(uid)
                 logger.info("Challenge posted uid=%s", uid)
             except Exception as exc:
                 logger.error("Failed to post challenge message: %s", exc)

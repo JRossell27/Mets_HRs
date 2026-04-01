@@ -350,9 +350,24 @@ class MLBMonitor:
                             specific_idx = idx
                             break
                 if specific_idx is None:
-                    # Prefer the last CALLED pitch (B or C) — ABS challenges are
-                    # always on called pitches, so this avoids landing on a later
-                    # swinging strike or foul if the at-bat continued after the review.
+                    # Priority 4: use challengeTeamId to search for the specific
+                    # disputed pitch type.
+                    #   Batter challenged → disputed a Called Strike → look for "C"
+                    #   Fielder challenged → disputed a Ball → look for "B"
+                    # This avoids landing on a different call type thrown later in
+                    # the at-bat after the review (e.g. a ball thrown after a batter
+                    # won their ABS challenge on a called strike).
+                    _p4_is_top = play.get("about", {}).get("isTopInning", True)
+                    _p4_batting_id = str(
+                        teams.get("away" if _p4_is_top else "home", {}).get("id", "")
+                    )
+                    _p4_challenge_id = str(play_level_review.get("challengeTeamId", ""))
+                    if _p4_challenge_id and _p4_challenge_id == _p4_batting_id:
+                        _p4_primary = "C"   # batter challenge → look for called strike
+                    elif _p4_challenge_id:
+                        _p4_primary = "B"   # fielder challenge → look for ball
+                    else:
+                        _p4_primary = None  # unknown challenger; accept B or C
                     for idx in range(len(play_events) - 1, -1, -1):
                         pe = play_events[idx]
                         if pe.get("isPitch", False):
@@ -360,10 +375,25 @@ class MLBMonitor:
                                 pe.get("details", {}).get("call", {}).get("code", "")
                                 or pe.get("details", {}).get("code", "")
                             )
-                            if call_code in ("B", "C"):
+                            if _p4_primary and call_code == _p4_primary:
                                 specific_idx = idx
                                 break
-                    # If no called pitch found, fall back to any pitch
+                            elif not _p4_primary and call_code in ("B", "C"):
+                                specific_idx = idx
+                                break
+                    # Second pass: any called pitch if primary search failed
+                    if specific_idx is None:
+                        for idx in range(len(play_events) - 1, -1, -1):
+                            pe = play_events[idx]
+                            if pe.get("isPitch", False):
+                                call_code = (
+                                    pe.get("details", {}).get("call", {}).get("code", "")
+                                    or pe.get("details", {}).get("code", "")
+                                )
+                                if call_code in ("B", "C"):
+                                    specific_idx = idx
+                                    break
+                    # Last resort: any pitch event
                     if specific_idx is None:
                         for idx in range(len(play_events) - 1, -1, -1):
                             if play_events[idx].get("isPitch", False):
@@ -567,6 +597,20 @@ class MLBMonitor:
                         challenger_name = batter_name
                         challenger_role = "batter"
                         challenging_team = batting_team
+
+                # For ABS pitch challenges, override the original_call and pitch
+                # code in pitch_info using challengeTeamId.  The 2026 API may
+                # store the post-overturn outcome in the pitch's call field
+                # rather than the original disputed call, and priority 4 pitch-
+                # finding may land on the wrong pitch.  The original call is
+                # definitionally determined by who issued the challenge:
+                #   Batting team challenged → they disputed a Called Strike
+                #   Fielding team challenged → they disputed a Ball
+                if (review_type_raw or "").lower() in ("mj", "pitchchallenge") and pitch_info:
+                    if challenging_team == batting_team:
+                        pitch_info = {**pitch_info, "original_call": "Called Strike", "code": "C"}
+                    elif challenging_team == fielding_team:
+                        pitch_info = {**pitch_info, "original_call": "Ball", "code": "B"}
 
                 challenge = {
                     "uid": uid,
