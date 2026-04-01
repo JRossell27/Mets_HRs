@@ -272,6 +272,7 @@ class ABSSeasonTracker:
         top_fielders = sorted(fielders_qual.items(), key=sort_key)[:3]
 
         lines = [
+            f"## 📊 ABS Challenge Tracker - {today_str}",
             f"## 📊 ABS Challenge Tracker — {today_str}",
             "",
             (
@@ -292,6 +293,8 @@ class ABSSeasonTracker:
                 lines.append(f"*No {role_label} with {MIN_CHALLENGES}+ challenges yet.*")
             lines.append("")
 
+        section("Top 3 Batters - Overturn Success", "🏏", top_batters, "batters")
+        section("Top 3 Fielders - Overturn Success", "🧤", top_fielders, "fielders")
         section("Top 3 Batters — Overturn Success", "🏏", top_batters, "batters")
         section("Top 3 Fielders — Overturn Success", "🧤", top_fielders, "fielders")
 

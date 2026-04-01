@@ -166,6 +166,7 @@ class MLBMonitor:
         # {game_pk: {event_uid: state}}
         # state values: "in_progress", "resolved_overturned", "resolved_upheld", "resolved_unknown"
         self._seen_challenges: dict[int, dict[str, str]] = {}
+        # {game_pk: bool} - tracks which games we are actively watching
         # {game_pk: bool} — tracks which games we are actively watching
         self._active_games: dict[int, bool] = {}
 
