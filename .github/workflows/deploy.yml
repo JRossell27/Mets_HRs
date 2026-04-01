@@ -20,7 +20,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Fail on unresolved merge-conflict markers
+        run: |
+          if rg -n "^(<<<<<<<|=======|>>>>>>>)" --glob "*.py" .; then
+            echo "Found unresolved merge conflict markers."
+            exit 1
+          fi
+      - name: Syntax check before deploy
+        run: python -m py_compile bot.py mlb_monitor.py message_formatter.py abs_tracker.py
       - uses: superfly/flyctl-actions/setup-flyctl@master
-      - run: flyctl deploy --remote-only
+      - run: flyctl deploy --remote-only --no-cache --strategy immediate
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
