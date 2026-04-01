@@ -76,6 +76,12 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 monitor = MLBMonitor()
 tracker = ABSSeasonTracker()
 
+# In-memory set of every challenge uid posted in this process lifetime.
+# Belt-and-suspenders guard: even if _seen_challenges state is lost or
+# posted_discord_uids fails to persist, a challenge is NEVER posted twice
+# within the same running process.
+_session_posted_uids: set = set()
+
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
 def _all_games_final(games: list[dict]) -> bool:
@@ -161,19 +167,45 @@ async def poll_mlb():
     for challenge in challenges:
         uid = challenge["uid"]
 
-        if challenge["is_in_progress"]:
-            # Do not notify while review is pending; wait for confirmed result.
+        pitch_info = challenge.get("pitch_info", {}) or {}
+        raw_call = (pitch_info.get("original_call", "") or "").lower()
+        pitch_code = (pitch_info.get("code", "") or "")
+        # Only post if the pitch is a called ball or called strike.
+        # Explicit deny: HBP, swinging strike, foul, in-play — these are never
+        # ABS-challengeable and indicate the wrong pitch was found in the feed.
+        _BLOCKED_CALLS = ("hit by pitch", "swinging strike", "foul", "in play")
+        _pitch_is_called = (
+            not any(s in raw_call for s in _BLOCKED_CALLS)
+            and (
+                pitch_code in ("B", "C")
+                or (not pitch_code and (not raw_call
+                                        or "called strike" in raw_call
+                                        or raw_call.startswith("ball")))
+            )
+        )
+
+        if not challenge.get("is_abs_pitch_challenge"):
+            logger.debug("Skipping non-ABS challenge uid=%s review_type=%s", uid, challenge.get("review_type"))
+        elif not _pitch_is_called:
+            logger.debug("Skipping non-called-pitch ABS uid=%s code=%r call=%r", uid, pitch_code, raw_call)
+        elif challenge["is_in_progress"]:
             logger.debug("Skipping in-progress challenge notification uid=%s", uid)
+        elif uid in _session_posted_uids:
+            logger.debug("Skipping already-posted-this-session uid=%s", uid)
+        elif tracker.has_posted_discord(uid):
+            logger.debug("Skipping already-posted challenge uid=%s", uid)
         else:
-            # Challenge resolved - record to tracker FIRST so stats are current
+            # Add to session set BEFORE sending so that even if channel.send
+            # partially succeeds but raises (network hiccup), we never re-post.
+            _session_posted_uids.add(uid)
             try:
                 tracker.record_challenge(challenge)
-                _enrich_with_season_stats(challenge)
                 msg_text = format_challenge_message(challenge)
                 await channel.send(msg_text)
-                logger.info("Challenge resolved (single message): %s", uid)
+                tracker.mark_discord_posted(uid)
+                logger.info("Challenge posted uid=%s", uid)
             except Exception as exc:
-                logger.error("Failed to send/edit challenge message: %s", exc)
+                logger.error("Failed to post challenge message: %s", exc)
 
     # ── Daily recap check ────────────────────────────────────────────────────
     today_str = datetime.now(EASTERN).strftime("%Y-%m-%d")
@@ -196,6 +228,58 @@ async def before_poll():
 
 
 # ─── Bot events ──────────────────────────────────────────────────────────────
+async def _initialize_discord_post_state():
+    """
+    On startup, seed _seen_challenges and _session_posted_uids with every
+    challenge already present in today's games so the poll loop never
+    re-posts challenges that happened before this deploy.
+
+    Uses _extract_challenges_from_feed directly (not extract_all_challenges_
+    from_feed) so _seen_challenges is actually written.  Each game is wrapped
+    in its own try/except so one bad feed never blocks the others.
+
+    Only RESOLVED challenges are added to _session_posted_uids / posted_discord_uids.
+    In-progress challenges at startup are left un-marked so the bot can post
+    their result when they complete.
+    """
+    try:
+        games = await monitor.get_todays_games()
+    except Exception as exc:
+        logger.error("Startup init: failed to get today's games: %s", exc)
+        return
+
+    marked = 0
+    for game in games:
+        game_pk = game.get("gamePk")
+        if not game_pk:
+            continue
+        try:
+            feed = await monitor.get_live_feed(game_pk)
+            if not feed:
+                continue
+            challenges = monitor._extract_challenges_from_feed(
+                feed, game_pk, emit_updates_only=False
+            )
+            for ch in challenges:
+                uid = ch.get("uid", "")
+                if not uid or not ch.get("is_abs_pitch_challenge"):
+                    continue
+                if not ch.get("is_in_progress"):
+                    # Resolved — mark so the poll loop will never post it.
+                    _session_posted_uids.add(uid)
+                    if not tracker.has_posted_discord(uid):
+                        tracker.mark_discord_posted(uid)
+                        marked += 1
+        except Exception as exc:
+            logger.error("Startup init: failed to process game %s: %s", game_pk, exc)
+
+    logger.info(
+        "Startup: primed seen_challenges for %d games; "
+        "pre-marked %d UIDs (%d total in session set)",
+        len(games), marked, len(_session_posted_uids),
+    )
+
+
 @bot.event
 async def on_ready():
     logger.info("Logged in as %s (ID: %s)", bot.user, bot.user.id)
@@ -204,6 +288,11 @@ async def on_ready():
     # Backfill historical ABS data from season start in the background so
     # the bot is ready to poll immediately without waiting for backfill.
     asyncio.create_task(_run_backfill())
+
+    # Pre-mark all resolved challenges seen so far today so the poll loop
+    # doesn't flood Discord on redeploy.  Awaited so it completes before
+    # the poll loop starts.
+    await _initialize_discord_post_state()
 
     if not poll_mlb.is_running():
         poll_mlb.start()
