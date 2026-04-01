@@ -291,6 +291,8 @@ class MLBMonitor:
 
         new_challenges = []
 
+        _ABS_TYPES = ("mj", "pitchchallenge")
+
         for play in all_plays:
             at_bat_index = play.get("about", {}).get("atBatIndex", 0)
             play_events = play.get("playEvents", [])
@@ -298,12 +300,61 @@ class MLBMonitor:
             batter_name = matchup.get("batter", {}).get("fullName", "Unknown Batter")
             pitcher_name = matchup.get("pitcher", {}).get("fullName", "Unknown Pitcher")
 
-            for event_idx, play_event in enumerate(play_events):
-                details = play_event.get("details", {})
-                if not _is_challenge_event(details, play_event, play):
-                    continue
+            # ── Identify candidate events to examine ──────────────────────
+            # In the 2026 Stats API, ABS challenges are stored as reviewDetails
+            # on the PLAY (allPlays element), not on individual pitch events.
+            # Iterating over all playEvents would record EVERY ball and called
+            # strike in the at-bat as a separate challenge.  Instead, detect
+            # play-level ABS reviews up-front and pinpoint the ONE pitch that
+            # was actually challenged before entering the per-event loop.
 
-                review = _extract_review_details(details, play_event, play)
+            play_level_review = play.get("reviewDetails") or {}
+            play_review_type = (play_level_review.get("reviewType", "") or "").lower()
+
+            if play_review_type in _ABS_TYPES:
+                # Find the specific challenged pitch event using the priority
+                # documented by ABS-Auditor / Stats API community notes:
+                # 1. pitch event whose own reviewDetails matches the play review
+                # 2. pitch event with details.hasReview == True
+                # 3. last pitch event in the play (last resort)
+                specific_idx = None
+                for idx, pe in enumerate(play_events):
+                    pe_rv_type = (pe.get("reviewDetails", {}).get("reviewType", "") or "").lower()
+                    if pe_rv_type in _ABS_TYPES:
+                        specific_idx = idx
+                        break
+                if specific_idx is None:
+                    for idx, pe in enumerate(play_events):
+                        if pe.get("details", {}).get("hasReview"):
+                            specific_idx = idx
+                            break
+                if specific_idx is None:
+                    for idx in range(len(play_events) - 1, -1, -1):
+                        if play_events[idx].get("isPitch", False):
+                            specific_idx = idx
+                            break
+                candidate_events = (
+                    [(specific_idx, play_events[specific_idx])]
+                    if specific_idx is not None else []
+                )
+            else:
+                # No play-level ABS review: scan all events for keyword /
+                # event-level review markers (handles manager challenges,
+                # older feed shapes, and live-monitoring edge cases).
+                candidate_events = [
+                    (idx, pe) for idx, pe in enumerate(play_events)
+                    if _is_challenge_event(pe.get("details", {}), pe, play)
+                ]
+
+            for event_idx, play_event in candidate_events:
+                details = play_event.get("details", {})
+
+                # Merge play-level and event-level review data so we always
+                # have the most complete picture.  Play level holds player name
+                # and challengeTeamId; event level may have fresher inProgress.
+                ev_review = _extract_review_details(details, play_event, play)
+                review = {**play_level_review, **{k: v for k, v in ev_review.items() if v is not None}}
+
                 description_text = " ".join([
                     str(details.get("description", "")),
                     str(play_event.get("description", "")),
