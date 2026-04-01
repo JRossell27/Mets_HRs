@@ -80,6 +80,7 @@ class ABSSeasonTracker:
         self.data.setdefault("players", {})
         self.data.setdefault("recorded_challenge_uids", [])
         self.data.setdefault("posted_discord_uids", [])
+        self.data.setdefault("posted_discord_fingerprints", [])
         self.data.setdefault("classifier_version", 1)
 
         # Backward/forward compatibility: support list or dict.
@@ -230,6 +231,15 @@ class ABSSeasonTracker:
         lst = self.data.setdefault("posted_discord_uids", [])
         if uid not in lst:
             lst.append(uid)
+            self._save()
+
+    def has_posted_fingerprint(self, fingerprint: str) -> bool:
+        return fingerprint in self.data.get("posted_discord_fingerprints", [])
+
+    def mark_fingerprint_posted(self, fingerprint: str):
+        lst = self.data.setdefault("posted_discord_fingerprints", [])
+        if fingerprint not in lst:
+            lst.append(fingerprint)
             self._save()
 
     def mark_recap_posted(self, date_str: str):
