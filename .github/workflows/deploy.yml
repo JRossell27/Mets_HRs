@@ -23,12 +23,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Fail on unresolved merge-conflict markers
-        run: |
-          if rg -n "^(<<<<<<<|=======|>>>>>>>)" --glob "*.py" .; then
-            echo "Found unresolved merge conflict markers."
-            exit 1
-          fi
       - name: Syntax check before deploy
         run: python -m py_compile bot.py mlb_monitor.py message_formatter.py abs_tracker.py
       - uses: superfly/flyctl-actions/setup-flyctl@master

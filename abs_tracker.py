@@ -28,7 +28,9 @@ DATA_FILE = _DATA_DIR / "abs_season_data.json"
 
 # Minimum challenges a player needs to appear in the leaderboard.
 MIN_CHALLENGES = 3
-CLASSIFIER_VERSION = 6
+CLASSIFIER_VERSION = 5
+CLASSIFIER_VERSION = 4
+CLASSIFIER_VERSION = 2
 
 
 class ABSSeasonTracker:
@@ -163,7 +165,7 @@ class ABSSeasonTracker:
         original_call = (
             challenge.get("pitch_info", {}).get("original_call", "") or ""
         ).lower()
-        if not any(k in original_call for k in ("called strike", "called ball")):
+        if not any(k in original_call for k in ("called strike", "called ball", "ball")):
             logger.debug("Skipping non-called-pitch challenge uid=%s call=%r", uid, original_call)
             return False
 
