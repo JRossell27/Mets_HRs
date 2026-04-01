@@ -162,18 +162,19 @@ async def poll_mlb():
         uid = challenge["uid"]
 
         if challenge["is_in_progress"]:
-            # Do not notify while review is pending; wait for confirmed result.
             logger.debug("Skipping in-progress challenge notification uid=%s", uid)
+        elif tracker.has_posted_discord(uid):
+            logger.debug("Skipping already-posted challenge uid=%s", uid)
         else:
-            # Challenge resolved - record to tracker FIRST so stats are current
             try:
                 tracker.record_challenge(challenge)
                 _enrich_with_season_stats(challenge)
                 msg_text = format_challenge_message(challenge)
                 await channel.send(msg_text)
-                logger.info("Challenge resolved (single message): %s", uid)
+                tracker.mark_discord_posted(uid)
+                logger.info("Challenge posted uid=%s", uid)
             except Exception as exc:
-                logger.error("Failed to send/edit challenge message: %s", exc)
+                logger.error("Failed to post challenge message: %s", exc)
 
     # ── Daily recap check ────────────────────────────────────────────────────
     today_str = datetime.now(EASTERN).strftime("%Y-%m-%d")

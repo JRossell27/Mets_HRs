@@ -79,6 +79,7 @@ class ABSSeasonTracker:
         self.data.setdefault("daily_recap_posted", [])
         self.data.setdefault("players", {})
         self.data.setdefault("recorded_challenge_uids", [])
+        self.data.setdefault("posted_discord_uids", [])
         self.data.setdefault("classifier_version", 1)
 
         # Backward/forward compatibility: support list or dict.
@@ -238,6 +239,15 @@ class ABSSeasonTracker:
     def has_posted_recap(self, date_str: str) -> bool:
         return date_str in self.data.get("daily_recap_posted", [])
 
+    def has_posted_discord(self, uid: str) -> bool:
+        return uid in self.data.get("posted_discord_uids", [])
+
+    def mark_discord_posted(self, uid: str):
+        lst = self.data.setdefault("posted_discord_uids", [])
+        if uid not in lst:
+            lst.append(uid)
+            self._save()
+
     def mark_recap_posted(self, date_str: str):
         lst = self.data.setdefault("daily_recap_posted", [])
         if date_str not in lst:
@@ -265,7 +275,7 @@ class ABSSeasonTracker:
                 f"{s['overturned']}/{s['challenges']}  **{pct:.1f}%**"
             )
 
-        sort_key = lambda x: (-rate(x[1]), -x[1]["challenges"])
+        sort_key = lambda x: (-x[1]["overturned"], -rate(x[1]))
 
         def ranked(role: str) -> list:
             qual = {
