@@ -41,11 +41,30 @@ def _normalize_call(call: str) -> str:
     return call or "Unknown"
 
 
+def _abs_original_call(challenge: dict) -> str:
+    """
+    For ABS pitch challenges, derive the original (disputed) call from
+    challenger_role.  Batters always challenge Called Strikes; fielders
+    (catcher/pitcher) always challenge Balls.  This is authoritative
+    because the 2026 API may store the post-overturn outcome in the
+    pitch's call field rather than the original disputed call.
+    """
+    role = challenge.get("challenger_role", "")
+    if role == "batter":
+        return "Strike"
+    if role in ("catcher", "pitcher"):
+        return "Ball"
+    return ""
+
+
 def _result_call(challenge: dict) -> str:
     """
     Infer resulting call after challenge based on overturn/uphold + original call.
     """
-    original = _normalize_call(challenge.get("pitch_info", {}).get("original_call", ""))
+    if challenge.get("is_abs_pitch_challenge"):
+        original = _abs_original_call(challenge)
+    else:
+        original = _normalize_call(challenge.get("pitch_info", {}).get("original_call", ""))
     overturned = challenge.get("is_overturned")
     if overturned is True:
         if original == "Strike":
@@ -125,7 +144,10 @@ def format_challenge_message(challenge: dict) -> str:
     score_str = f"{away} {away_score} - {home_score} {home}"
     inning_str = f"{half} {inning}"
     count_str = f"{balls}-{strikes}, {outs} out{'s' if outs != 1 else ''}"
-    original_call = _normalize_call(pitch_info.get("original_call", ""))
+    if challenge.get("is_abs_pitch_challenge"):
+        original_call = _abs_original_call(challenge)
+    else:
+        original_call = _normalize_call(pitch_info.get("original_call", ""))
     result_call = _result_call(challenge)
 
     stat_line = ""  # season stats removed from live posts
