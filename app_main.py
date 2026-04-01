@@ -192,6 +192,9 @@ async def poll_mlb():
             logger.debug("Skipping non-ABS challenge uid=%s review_type=%s", uid, challenge.get("review_type"))
         elif _looks_non_abs:
             logger.debug("Skipping explicitly non-ABS challenge uid=%s review_type=%r desc=%r", uid, review_type, desc)
+
+        if not challenge.get("is_abs_pitch_challenge"):
+            logger.debug("Skipping non-ABS challenge uid=%s review_type=%s", uid, challenge.get("review_type"))
         elif not _pitch_is_called:
             logger.debug("Skipping non-called-pitch ABS uid=%s code=%r call=%r", uid, pitch_code, raw_call)
         elif challenge["is_in_progress"]:
