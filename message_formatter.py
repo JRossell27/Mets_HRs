@@ -32,6 +32,31 @@ def _result_line(challenge: dict) -> str:
     return "📋 REVIEW COMPLETE"
 
 
+def _normalize_call(call: str) -> str:
+    c = (call or "").lower()
+    if "strike" in c:
+        return "Strike"
+    if "ball" in c:
+        return "Ball"
+    return call or "Unknown"
+
+
+def _result_call(challenge: dict) -> str:
+    """
+    Infer resulting call after challenge based on overturn/uphold + original call.
+    """
+    original = _normalize_call(challenge.get("pitch_info", {}).get("original_call", ""))
+    overturned = challenge.get("is_overturned")
+    if overturned is True:
+        if original == "Strike":
+            return "Ball"
+        if original == "Ball":
+            return "Strike"
+    if overturned is False:
+        return original
+    return "Pending"
+
+
 def _pitch_line(pitch_info: dict) -> str:
     """Format pitch details into a single line."""
     parts = []
@@ -97,42 +122,31 @@ def format_challenge_message(challenge: dict) -> str:
     strikes = challenge["strikes"]
     outs = challenge["outs"]
     pitch_info = challenge["pitch_info"]
-    description = challenge.get("description", "")
-
     result = _result_line(challenge)
     pitch_line = _pitch_line(pitch_info) if pitch_info else "No pitch data available"
     tags = _hashtags(away_abbr, home_abbr)
-    score_str = f"{away} {away_score} — {home_score} {home}"
+    score_str = f"{away} {away_score} - {home_score} {home}"
     inning_str = f"{half} {inning}"
     count_str = f"{balls}-{strikes}, {outs} out{'s' if outs != 1 else ''}"
-    stat_line = _challenger_stat_line(challenge)
+    original_call = _normalize_call(pitch_info.get("original_call", ""))
+    result_call = _result_call(challenge)
 
-    # Twitter-optimized text block (inside a code block for easy copy)
     twitter_text = (
-        f"⚾ {review_type.upper()}\n"
+        f"ABS CHALLENGE INITIATED\n"
         f"{result}\n"
+        f"ORIGINAL CALL: \"{original_call}\"\n"
+        f"RESULT: \"{result_call}\"\n"
         f"\n"
         f"🏟 {score_str} | {inning_str}\n"
         f"⚡ {pitcher} → {batter} | {count_str}\n"
         f"📍 {pitch_line}\n"
         f"📢 Challenged by: {challenging_team}\n"
+        f"\n"
+        f"🏟 {venue}\n"
+        f"\n{tags}"
     )
 
-    if stat_line:
-        twitter_text += f"{stat_line}\n"
-
-    if description:
-        twitter_text += f"📋 {description}\n"
-
-    twitter_text += f"\n🏟 {venue}\n\n{tags}"
-
-    # Wrap in Discord formatting
-    discord_message = (
-        f"## ⚾ MLB {review_type} Detected!\n"
-        f"**{result}**\n\n"
-        f"```\n{twitter_text}\n```\n"
-        f"*Copy the text above to post on Twitter/X*"
-    )
+    discord_message = f"```\n{twitter_text}\n```"
 
     return discord_message
 
@@ -154,10 +168,10 @@ def format_update_message(challenge: dict) -> str:
     tags = _hashtags(away_abbr, home_abbr)
 
     twitter_text = (
-        f"⚾ {review_type.upper()} — RESULT\n"
+        f"⚾ {review_type.upper()} - RESULT\n"
         f"{result}\n"
         f"\n"
-        f"🏟 {away} {away_score} — {home_score} {home} | {half} {inning}\n"
+        f"🏟 {away} {away_score} - {home_score} {home} | {half} {inning}\n"
         f"\n{tags}"
     )
 

@@ -1,23 +1,21 @@
-"""
-MLB Pitch Challenge Discord Bot
-
-Monitors MLB games in real-time and sends a message to a Discord channel
-whenever a pitch challenge (ABS challenge or manager challenge) is detected.
-Each message contains Twitter/X-ready copy-paste text including the
-challenging player's season success rate.
-
-After all games each day are final the bot posts a full ABS season tracker
-recap comparing batters, catchers, and pitchers by challenge success rate.
-
-Required environment variables:
-  DISCORD_TOKEN    — Your Discord bot token
-  CHANNEL_ID       — The Discord channel ID to post alerts in
-
-Optional:
-  POLL_INTERVAL    — Seconds between polls (default: 30)
-  LOG_LEVEL        — Logging level (default: INFO)
-  DATA_DIR         — Directory for persistent data file (default: current dir)
-"""
+# MLB Pitch Challenge Discord Bot
+#
+# Monitors MLB games in real-time and sends a message to a Discord channel
+# whenever a pitch challenge (ABS challenge or manager challenge) is detected.
+# Each message contains Twitter/X-ready copy-paste text including the
+# challenging player's season success rate.
+#
+# After all games each day are final the bot posts a full ABS season tracker
+# recap comparing batters, catchers, and pitchers by challenge success rate.
+#
+# Required environment variables:
+#   DISCORD_TOKEN    - Your Discord bot token
+#   CHANNEL_ID       - The Discord channel ID to post alerts in
+#
+# Optional:
+#   POLL_INTERVAL    - Seconds between polls (default: 30)
+#   LOG_LEVEL        - Logging level (default: INFO)
+#   DATA_DIR         - Directory for persistent data file (default: current dir)
 
 import asyncio
 import json
@@ -33,7 +31,7 @@ from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
 from abs_tracker import ABSSeasonTracker
-from message_formatter import format_challenge_message, format_update_message
+from message_formatter import format_challenge_message
 from mlb_monitor import MLBMonitor
 
 load_dotenv()
@@ -54,15 +52,21 @@ logging.basicConfig(
 logger = logging.getLogger("pitch_challenge_bot")
 
 # ─── Validation ───────────────────────────────────────────────────────────────
-if not DISCORD_TOKEN:
-    logger.error("DISCORD_TOKEN is not set. Add it to your .env file.")
-    sys.exit(1)
+if DISCORD_TOKEN:
+    BOT_TOKEN_VALID = True
+else:
+    BOT_TOKEN_VALID = False
+    logger.warning("DISCORD_TOKEN is not set. Bot will run in web-panel-only mode.")
 
 try:
     CHANNEL_ID = int(CHANNEL_ID_STR)
+    CHANNEL_VALID = True
 except ValueError:
-    logger.error("CHANNEL_ID is missing or not a valid integer.")
-    sys.exit(1)
+    CHANNEL_ID = 0
+    CHANNEL_VALID = False
+    logger.warning("CHANNEL_ID is missing/invalid. Bot will run in web-panel-only mode.")
+
+BOT_RUNTIME_ENABLED = BOT_TOKEN_VALID and CHANNEL_VALID
 
 # ─── Bot Setup ────────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
@@ -71,11 +75,6 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 monitor = MLBMonitor()
 tracker = ABSSeasonTracker()
-
-# Track in-progress challenges so we can send result updates.
-# {uid: discord.Message}
-pending_challenges: dict[str, discord.Message] = {}
-
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -104,13 +103,53 @@ def _enrich_with_season_stats(challenge: dict) -> dict:
     return challenge
 
 
+async def _send_chunked_message(target, text: str, limit: int = 2000) -> int:
+    """
+    Send long Discord content in multiple messages to avoid 2000-char limit.
+    Splits on line boundaries when possible.
+    Returns the number of messages sent.
+    """
+    if len(text) <= limit:
+        await target.send(text)
+        return 1
+
+    sent = 0
+    chunk = ""
+    for line in text.splitlines(keepends=True):
+        # If an individual line is longer than limit, hard-split it.
+        if len(line) > limit:
+            if chunk:
+                await target.send(chunk)
+                sent += 1
+                chunk = ""
+            start = 0
+            while start < len(line):
+                await target.send(line[start:start + limit])
+                sent += 1
+                start += limit
+            continue
+
+        if len(chunk) + len(line) > limit:
+            await target.send(chunk.rstrip("\n"))
+            sent += 1
+            chunk = line
+        else:
+            chunk += line
+
+    if chunk:
+        await target.send(chunk.rstrip("\n"))
+        sent += 1
+
+    return sent
+
+
 # ─── Background polling task ─────────────────────────────────────────────────
 @tasks.loop(seconds=POLL_INTERVAL)
 async def poll_mlb():
     """Periodically poll MLB live feeds and post challenge alerts."""
     channel = bot.get_channel(CHANNEL_ID)
     if channel is None:
-        logger.warning("Could not find channel %s — make sure the bot has access.", CHANNEL_ID)
+        logger.warning("Could not find channel %s - make sure the bot has access.", CHANNEL_ID)
         return
 
     try:
@@ -123,29 +162,16 @@ async def poll_mlb():
         uid = challenge["uid"]
 
         if challenge["is_in_progress"]:
-            # Send an "in progress" message and save it for later editing
-            try:
-                msg_text = format_challenge_message(challenge)
-                msg = await channel.send(msg_text)
-                pending_challenges[uid] = msg
-                logger.info("Challenge detected (in progress): %s", uid)
-            except Exception as exc:
-                logger.error("Failed to send challenge message: %s", exc)
+            # Do not notify while review is pending; wait for confirmed result.
+            logger.debug("Skipping in-progress challenge notification uid=%s", uid)
         else:
-            # Challenge resolved — record to tracker FIRST so stats are current
+            # Challenge resolved - record to tracker FIRST so stats are current
             try:
                 tracker.record_challenge(challenge)
                 _enrich_with_season_stats(challenge)
-
-                if uid in pending_challenges:
-                    old_msg = pending_challenges.pop(uid)
-                    update_text = format_challenge_message(challenge)
-                    await old_msg.edit(content=update_text)
-                    logger.info("Challenge resolved (edited message): %s", uid)
-                else:
-                    msg_text = format_challenge_message(challenge)
-                    await channel.send(msg_text)
-                    logger.info("Challenge resolved (new message): %s", uid)
+                msg_text = format_challenge_message(challenge)
+                await channel.send(msg_text)
+                logger.info("Challenge resolved (single message): %s", uid)
             except Exception as exc:
                 logger.error("Failed to send/edit challenge message: %s", exc)
 
@@ -156,9 +182,9 @@ async def poll_mlb():
             games = await monitor.get_todays_games()
             if _all_games_final(games):
                 recap = tracker.generate_daily_recap()
-                await channel.send(recap)
+                parts = await _send_chunked_message(channel, recap)
                 tracker.mark_recap_posted(today_str)
-                logger.info("Posted ABS daily recap for %s", today_str)
+                logger.info("Posted ABS daily recap for %s in %d message(s)", today_str, parts)
         except Exception as exc:
             logger.error("Failed to post daily recap: %s", exc)
 
@@ -166,7 +192,7 @@ async def poll_mlb():
 @poll_mlb.before_loop
 async def before_poll():
     await bot.wait_until_ready()
-    logger.info("Bot ready — starting MLB polling every %ss", POLL_INTERVAL)
+    logger.info("Bot ready - starting MLB polling every %ss", POLL_INTERVAL)
 
 
 # ─── Bot events ──────────────────────────────────────────────────────────────
@@ -187,7 +213,7 @@ async def _run_backfill():
     """Run the season backfill in the background at startup."""
     try:
         recorded = await tracker.backfill_season(monitor)
-        logger.info("Season backfill finished — %d historical challenges loaded", recorded)
+        logger.info("Season backfill finished - %d historical challenges loaded", recorded)
     except Exception as exc:
         logger.error("Season backfill failed: %s", exc)
 
@@ -207,7 +233,7 @@ async def status(ctx):
     total = len(games)
     live = len(live_games)
 
-    lines = [f"**MLB Pitch Challenge Bot — Status**"]
+    lines = [f"**MLB Pitch Challenge Bot - Status**"]
     lines.append(f"Polling interval: every {POLL_INTERVAL}s")
     lines.append(f"Today's games: {total} total, {live} live")
 
@@ -231,7 +257,7 @@ async def status(ctx):
 async def abs_stats(ctx):
     """Post the current ABS season challenge leaderboard."""
     recap = tracker.generate_daily_recap()
-    await ctx.send(recap)
+    await _send_chunked_message(ctx, recap)
 
 
 @bot.command(name="testchallenge")
@@ -310,7 +336,7 @@ async def diag_date(ctx, date_str: str = ""):
         ab = status.get("abstractGameState", "?")
         away = g.get("teams", {}).get("away", {}).get("team", {}).get("abbreviation", "?")
         home = g.get("teams", {}).get("home", {}).get("team", {}).get("abbreviation", "?")
-        lines.append(f"  `{g.get('gamePk')}` {away}@{home} — statusCode=`{sc}` abstractState=`{ab}`")
+        lines.append(f"  `{g.get('gamePk')}` {away}@{home} - statusCode=`{sc}` abstractState=`{ab}`")
     await ctx.send("\n".join(lines))
 
     final_games = [
@@ -318,15 +344,40 @@ async def diag_date(ctx, date_str: str = ""):
         if g.get("status", {}).get("abstractGameState") == "Final"
         or g.get("status", {}).get("statusCode") in final_codes
     ]
-    await ctx.send(f"{len(final_games)} game(s) considered final — fetching feeds…")
+    await ctx.send(f"{len(final_games)} game(s) considered final - fetching feeds…")
 
     total_challenges = []
+    total_candidates = 0
     for g in final_games:
         game_pk = g.get("gamePk")
         feed = await monitor.get_live_feed(game_pk)
         if not feed:
             await ctx.send(f"  `{game_pk}`: no feed returned")
             continue
+
+        all_plays = feed.get("liveData", {}).get("plays", {}).get("allPlays", [])
+        candidate_hits = 0
+        for p in all_plays:
+            result = p.get("result", {})
+            result_txt = " ".join(
+                str(result.get(k, "")) for k in ("event", "eventType", "description")
+            ).lower()
+            if any(k in result_txt for k in ("challenge", "review", "overturned", "upheld")):
+                candidate_hits += 1
+
+            for e in p.get("playEvents", []):
+                d = e.get("details", {})
+                det_txt = " ".join(
+                    str(d.get(k, "")) for k in ("event", "eventType", "description")
+                ).lower()
+                if (
+                    any(k in det_txt for k in ("challenge", "review", "overturned", "upheld"))
+                    or d.get("reviewDetails")
+                    or e.get("reviewDetails")
+                ):
+                    candidate_hits += 1
+        total_candidates += candidate_hits
+
         challenges = monitor.extract_all_challenges_from_feed(feed, game_pk)
         total_challenges.extend(challenges)
         if challenges:
@@ -340,11 +391,15 @@ async def diag_date(ctx, date_str: str = ""):
                     f"role=`{ch.get('challenger_role')}`"
                 )
         else:
-            await ctx.send(f"  `{game_pk}`: 0 challenge events detected")
+            await ctx.send(
+                f"  `{game_pk}`: 0 challenge events detected "
+                f"(keyword/review candidates: {candidate_hits})"
+            )
 
     await ctx.send(
         f"**Total: {len(total_challenges)} challenge event(s) across "
-        f"{len(final_games)} final game(s) on {date_str}**"
+        f"{len(final_games)} final game(s) on {date_str}. "
+        f"Raw keyword/review candidates: {total_candidates}**"
     )
 
 
@@ -370,10 +425,10 @@ async def help_bot(ctx):
     """Show available commands."""
     help_text = (
         "**MLB Pitch Challenge Bot Commands**\n\n"
-        "`!status` — Show today's games and live monitoring status\n"
-        "`!absstats` — Show the current ABS season challenge leaderboard\n"
-        "`!testchallenge` — (owner only) Send a test challenge message\n"
-        "`!help_bot` — Show this help message\n\n"
+        "`!status` - Show today's games and live monitoring status\n"
+        "`!absstats` - Show the current ABS season challenge leaderboard\n"
+        "`!testchallenge` - (owner only) Send a test challenge message\n"
+        "`!help_bot` - Show this help message\n\n"
         "The bot automatically monitors all MLB games and posts an alert "
         "with Twitter-ready text whenever a pitch challenge occurs, including "
         "the challenging player's season success rate.  After all games each "
@@ -389,7 +444,7 @@ _HTML_PANEL = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MLB Bot — Test Panel</title>
+  <title>MLB Bot - Test Panel</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -446,7 +501,7 @@ _HTML_PANEL = """<!DOCTYPE html>
 </head>
 <body>
 <div class="container">
-  <h1>⚾ MLB Pitch Challenge Bot — <span>Test Panel</span></h1>
+  <h1>⚾ MLB Pitch Challenge Bot - <span>Test Panel</span></h1>
 
   <div class="card" id="status-card">
     <h2>Bot Status</h2>
@@ -478,7 +533,7 @@ async function loadStatus() {
     const recapLabel = d.recap_posted_today ? '✅ Yes' : '❌ Not yet';
     card.innerHTML = `
       <h2>Bot Status</h2>
-      <p><span class="dot"></span><strong>Online</strong> — polling every ${d.poll_interval}s</p>
+      <p><span class="dot"></span><strong>Online</strong> - polling every ${d.poll_interval}s</p>
       <div class="status-row">
         <span class="badge">📅 ${d.today}</span>
         <span class="badge">🎮 Live games: ${d.live_games}</span>
@@ -564,7 +619,7 @@ async def _api_test_challenge(request):
     try:
         channel = bot.get_channel(CHANNEL_ID)
         if channel is None:
-            raise RuntimeError("Bot channel not found — is the bot connected?")
+            raise RuntimeError("Bot channel not found - is the bot connected?")
         fake = {
             "uid": "webtest_001",
             "game_pk": 999999,
@@ -625,11 +680,14 @@ async def _api_post_recap(request):
     try:
         channel = bot.get_channel(CHANNEL_ID)
         if channel is None:
-            raise RuntimeError("Bot channel not found — is the bot connected?")
+            raise RuntimeError("Bot channel not found - is the bot connected?")
         recap = tracker.generate_daily_recap()
-        await channel.send(recap)
+        parts = await _send_chunked_message(channel, recap)
         return web.Response(
-            text=json.dumps({"ok": True, "message": "✅ Season recap posted to Discord."}),
+            text=json.dumps({
+                "ok": True,
+                "message": f"✅ Season recap posted to Discord in {parts} message(s).",
+            }),
             content_type="application/json",
         )
     except Exception as exc:
@@ -646,7 +704,7 @@ async def _api_run_backfill(request):
         return web.Response(
             text=json.dumps({
                 "ok": True,
-                "message": f"✅ Backfill complete — {recorded} new challenges recorded.",
+                "message": f"✅ Backfill complete - {recorded} new challenges recorded.",
             }),
             content_type="application/json",
         )
@@ -675,8 +733,12 @@ async def start_health_server():
 # ─── Entry point ─────────────────────────────────────────────────────────────
 async def main():
     asyncio.create_task(start_health_server())
-    async with bot:
-        await bot.start(DISCORD_TOKEN)
+    if BOT_RUNTIME_ENABLED:
+        async with bot:
+            await bot.start(DISCORD_TOKEN)
+    else:
+        # Keep the process alive so Fly health checks succeed while config is fixed.
+        await asyncio.Event().wait()
 
 if __name__ == "__main__":
     try:
