@@ -76,6 +76,12 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 monitor = MLBMonitor()
 tracker = ABSSeasonTracker()
 
+# In-memory set of every challenge uid posted in this process lifetime.
+# Belt-and-suspenders guard: even if _seen_challenges state is lost or
+# posted_discord_uids fails to persist, a challenge is NEVER posted twice
+# within the same running process.
+_session_posted_uids: set = set()
+
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
 def _all_games_final(games: list[dict]) -> bool:
@@ -184,6 +190,8 @@ async def poll_mlb():
             logger.debug("Skipping non-called-pitch ABS uid=%s code=%r call=%r", uid, pitch_code, raw_call)
         elif challenge["is_in_progress"]:
             logger.debug("Skipping in-progress challenge notification uid=%s", uid)
+        elif uid in _session_posted_uids:
+            logger.debug("Skipping already-posted-this-session uid=%s", uid)
         elif tracker.has_posted_discord(uid):
             logger.debug("Skipping already-posted challenge uid=%s", uid)
         else:
@@ -192,6 +200,7 @@ async def poll_mlb():
                 msg_text = format_challenge_message(challenge)
                 await channel.send(msg_text)
                 tracker.mark_discord_posted(uid)
+                _session_posted_uids.add(uid)
                 logger.info("Challenge posted uid=%s", uid)
             except Exception as exc:
                 logger.error("Failed to post challenge message: %s", exc)
@@ -219,51 +228,54 @@ async def before_poll():
 # ─── Bot events ──────────────────────────────────────────────────────────────
 async def _initialize_discord_post_state():
     """
-    On startup, seed _seen_challenges with the current state of every game
-    and pre-mark all resolved ABS challenges in posted_discord_uids.
+    On startup, seed _seen_challenges and _session_posted_uids with every
+    challenge already present in today's games so the poll loop never
+    re-posts challenges that happened before this deploy.
 
-    CRITICAL: we call _extract_challenges_from_feed directly (NOT
-    extract_all_challenges_from_feed) so that _seen_challenges is actually
-    populated.  extract_all_challenges_from_feed saves/restores the state,
-    leaving _seen_challenges empty, which would cause the first poll to
-    emit every challenge (previous_state=None) and flood Discord.
+    Uses _extract_challenges_from_feed directly (not extract_all_challenges_
+    from_feed) so _seen_challenges is actually written.  Each game is wrapped
+    in its own try/except so one bad feed never blocks the others.
 
-    By priming _seen_challenges here, the first poll iteration sees
-    previous_state == event_state for all pre-existing challenges and skips
-    them via emit_updates_only.  Only genuinely new challenges (not yet in
-    _seen_challenges) will be emitted and posted.
+    Only RESOLVED challenges are added to _session_posted_uids / posted_discord_uids.
+    In-progress challenges at startup are left un-marked so the bot can post
+    their result when they complete.
     """
     try:
         games = await monitor.get_todays_games()
-        marked = 0
-        for game in games:
-            game_pk = game.get("gamePk")
-            if not game_pk:
-                continue
+    except Exception as exc:
+        logger.error("Startup init: failed to get today's games: %s", exc)
+        return
+
+    marked = 0
+    for game in games:
+        game_pk = game.get("gamePk")
+        if not game_pk:
+            continue
+        try:
             feed = await monitor.get_live_feed(game_pk)
             if not feed:
                 continue
-            # Use the internal method directly to populate _seen_challenges.
-            # emit_updates_only=False so every challenge is returned (and thus
-            # every uid is written into _seen_challenges).
             challenges = monitor._extract_challenges_from_feed(
                 feed, game_pk, emit_updates_only=False
             )
             for ch in challenges:
                 uid = ch.get("uid", "")
-                # Pre-mark resolved ABS challenges as posted (belt-and-suspenders
-                # guard in case _seen_challenges is ever lost on restart).
-                if uid and ch.get("is_abs_pitch_challenge") and not ch.get("is_in_progress"):
+                if not uid or not ch.get("is_abs_pitch_challenge"):
+                    continue
+                if not ch.get("is_in_progress"):
+                    # Resolved — mark so the poll loop will never post it.
+                    _session_posted_uids.add(uid)
                     if not tracker.has_posted_discord(uid):
                         tracker.mark_discord_posted(uid)
                         marked += 1
-        logger.info(
-            "Startup: primed seen_challenges for all today's games; "
-            "pre-marked %d challenge UIDs as posted (flood prevention)",
-            marked,
-        )
-    except Exception as exc:
-        logger.error("Startup discord state initialization failed: %s", exc)
+        except Exception as exc:
+            logger.error("Startup init: failed to process game %s: %s", game_pk, exc)
+
+    logger.info(
+        "Startup: primed seen_challenges for %d games; "
+        "pre-marked %d UIDs (%d total in session set)",
+        len(games), marked, len(_session_posted_uids),
+    )
 
 
 @bot.event
