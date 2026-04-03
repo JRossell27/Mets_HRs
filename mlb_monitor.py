@@ -65,6 +65,60 @@ ZONE_DESCRIPTIONS = {
 }
 
 
+def _collect_urls(value, out: set[str]):
+    """Recursively collect URL-like strings from nested dict/list structures."""
+    if isinstance(value, dict):
+        for v in value.values():
+            _collect_urls(v, out)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _collect_urls(item, out)
+        return
+    if isinstance(value, str):
+        v = value.strip()
+        if v.startswith("http://") or v.startswith("https://"):
+            out.add(v)
+
+
+def _extract_media_urls(play_event: dict, play: dict, last_pitch: Optional[dict]) -> dict:
+    """
+    Best-effort extraction of media URLs attached to a challenge/play payload.
+    Prioritize video URLs, then image URLs.
+    """
+    urls: set[str] = set()
+    candidates = [play_event, play]
+    if last_pitch:
+        candidates.append(last_pitch)
+    for c in candidates:
+        _collect_urls(c, urls)
+
+    if not urls:
+        return {"video": "", "image": ""}
+
+    def _is_video(u: str) -> bool:
+        lu = u.lower()
+        return any(ext in lu for ext in (".mp4", ".m3u8", ".mov", ".webm")) or "video" in lu
+
+    def _is_image(u: str) -> bool:
+        lu = u.lower()
+        return any(ext in lu for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif")) or "image" in lu
+
+    preferred_video = sorted([u for u in urls if _is_video(u)])
+    preferred_image = sorted([u for u in urls if _is_image(u)])
+    fallback_sorted = sorted(urls)
+
+    video_url = preferred_video[0] if preferred_video else ""
+    image_url = preferred_image[0] if preferred_image else ""
+
+    # Fallback: if we only found generic URLs, keep one as image fallback
+    # so the formatter can still include a useful media link.
+    if not video_url and not image_url and fallback_sorted:
+        image_url = fallback_sorted[0]
+
+    return {"video": video_url, "image": image_url}
+
+
 def _extract_review_details(event_details: dict, play_event: dict, play: dict) -> dict:
     """
     Pull review metadata from whichever shape MLB feed is using.
@@ -663,6 +717,9 @@ class MLBMonitor:
                         review_type_raw, details, play_event, play, pitch_info
                     ),
                 }
+                media = _extract_media_urls(play_event, play, last_pitch)
+                challenge["media_video_url"] = media["video"]
+                challenge["media_image_url"] = media["image"]
                 # For ABS challenges detected through keyword-only path (without
                 # the _abs suffix), normalize UID to match play-level format so
                 # the same challenged pitch keeps one canonical UID.
