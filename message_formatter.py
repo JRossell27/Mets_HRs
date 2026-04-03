@@ -175,6 +175,7 @@ def format_challenge_message(challenge: dict) -> str:
 
     pre_pitch_count = _pre_pitch_count(challenge, original_call)
     new_count = _new_count(challenge, original_call)
+    zone_note = pitch_info.get("zone_desc", "Unknown Zone")
     video_url = challenge.get("media_video_url", "")
     image_url = challenge.get("media_image_url", "")
     media_line = ""
@@ -193,6 +194,7 @@ def format_challenge_message(challenge: dict) -> str:
         f"ABS: {abs_call}\n"
         f"Result: {decision} → Count: {new_count}\n"
         f"\n"
+        f"Zone: {zone_note}\n"
         f"{media_line}"
         f"\n{tags}"
     )
