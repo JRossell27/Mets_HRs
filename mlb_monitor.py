@@ -298,6 +298,20 @@ class MLBMonitor:
             logger.error("Failed to fetch live feed for game %s: %s", game_pk, exc)
             return None
 
+    async def get_challenge_snapshot(self, game_pk: int, uid: str) -> Optional[dict]:
+        """
+        Re-fetch a specific challenge by uid from the latest live feed.
+        Useful for delayed posting flows that wait for media URLs.
+        """
+        feed = await self.get_live_feed(game_pk)
+        if not feed:
+            return None
+        challenges = self.extract_all_challenges_from_feed(feed, game_pk)
+        for challenge in challenges:
+            if challenge.get("uid") == uid:
+                return challenge
+        return None
+
     def _get_active_catcher(self, feed: dict, fielding_team_key: str) -> str:
         """
         Return the name of the currently active catcher for the given team
