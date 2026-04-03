@@ -16,6 +16,7 @@
 #   POLL_INTERVAL    - Seconds between polls (default: 30)
 #   LOG_LEVEL        - Logging level (default: INFO)
 #   DATA_DIR         - Directory for persistent data file (default: current dir)
+#   AUTO_DAILY_RECAP - Enable auto posting season recap after final games (default: off)
 
 import asyncio
 import json
@@ -41,6 +42,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 CHANNEL_ID_STR = os.getenv("CHANNEL_ID", "")
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "30"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+AUTO_DAILY_RECAP = os.getenv("AUTO_DAILY_RECAP", "0").lower() in {"1", "true", "yes", "on"}
 
 EASTERN = pytz.timezone("US/Eastern")
 
@@ -266,18 +268,19 @@ async def poll_mlb():
             except Exception as exc:
                 logger.error("Failed to post challenge message: %s", exc)
 
-    # ── Daily recap check ────────────────────────────────────────────────────
-    today_str = datetime.now(EASTERN).strftime("%Y-%m-%d")
-    if not tracker.has_posted_recap(today_str):
-        try:
-            games = await monitor.get_todays_games()
-            if _all_games_final(games):
-                recap = tracker.generate_daily_recap()
-                parts = await _send_chunked_message(channel, recap)
-                tracker.mark_recap_posted(today_str)
-                logger.info("Posted ABS daily recap for %s in %d message(s)", today_str, parts)
-        except Exception as exc:
-            logger.error("Failed to post daily recap: %s", exc)
+    # ── Daily recap check (disabled by default) ──────────────────────────────
+    if AUTO_DAILY_RECAP:
+        today_str = datetime.now(EASTERN).strftime("%Y-%m-%d")
+        if not tracker.has_posted_recap(today_str):
+            try:
+                games = await monitor.get_todays_games()
+                if _all_games_final(games):
+                    recap = tracker.generate_daily_recap()
+                    parts = await _send_chunked_message(channel, recap)
+                    tracker.mark_recap_posted(today_str)
+                    logger.info("Posted ABS daily recap for %s in %d message(s)", today_str, parts)
+            except Exception as exc:
+                logger.error("Failed to post daily recap: %s", exc)
 
 
 @poll_mlb.before_loop
