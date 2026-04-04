@@ -225,7 +225,7 @@ def _is_abs_pitch_challenge(
     abs_text_markers = (
         "challenged" in text
         and "call on the field was" in text
-        and any(k in text for k in ("overturned", "upheld", "stands"))
+        and any(k in text for k in ("overturned", "upheld", "stands", "confirmed"))
         and any(k in text for k in ("called strike", "called ball", "strikes", "balls"))
     )
     if abs_text_markers and "manager challenge" not in text and "replay review" not in text:
@@ -505,7 +505,7 @@ class MLBMonitor:
                 if is_overturned is None:
                     if "overturned" in description_text:
                         is_overturned = True
-                    elif any(k in description_text for k in ("upheld", "stands")):
+                    elif any(k in description_text for k in ("upheld", "stands", "confirmed")):
                         is_overturned = False
                 if not is_in_progress and "in progress" in description_text:
                     is_in_progress = True
