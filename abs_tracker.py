@@ -28,7 +28,7 @@ DATA_FILE = _DATA_DIR / "abs_season_data.json"
 
 # Minimum challenges a player needs to appear in the leaderboard.
 MIN_CHALLENGES = 3
-CLASSIFIER_VERSION = 14
+CLASSIFIER_VERSION = 15
 
 
 class ABSSeasonTracker:
@@ -121,6 +121,39 @@ class ABSSeasonTracker:
 
     # ── Challenge recording ──────────────────────────────────────────────────
 
+    @staticmethod
+    def _is_supported_abs_challenge(challenge: dict) -> bool:
+        """
+        Keep season totals aligned with what live posting accepts.
+        """
+        pitch_info = challenge.get("pitch_info", {}) or {}
+        raw_call = (pitch_info.get("original_call", "") or "").lower()
+        pitch_code = (pitch_info.get("code", "") or "")
+        desc = (challenge.get("description", "") or "").lower()
+        review_type = (challenge.get("review_type", "") or "").lower()
+
+        blocked_calls = ("hit by pitch", "swinging strike", "foul", "in play")
+        blocked_review_types = ("manager challenge", "umpire review", "replay review")
+        pitch_is_called = (
+            not any(s in raw_call for s in blocked_calls)
+            and (
+                pitch_code in ("B", "C")
+                or (
+                    not pitch_code
+                    and (
+                        not raw_call
+                        or "called strike" in raw_call
+                        or raw_call.startswith("ball")
+                    )
+                )
+            )
+        )
+        looks_non_abs = (
+            any(s in desc for s in blocked_calls)
+            or any(s in review_type for s in blocked_review_types)
+        )
+        return bool(challenge.get("is_abs_pitch_challenge")) and pitch_is_called and not looks_non_abs
+
     def record_challenge(self, challenge: dict) -> bool:
         """
         Record a resolved ABS pitch challenge into the season stats.
@@ -153,7 +186,7 @@ class ABSSeasonTracker:
         if any(t in review_type for t in non_abs_types):
             logger.debug("Skipping non-ABS challenge type=%s uid=%s", review_type, uid)
             return False
-        if not challenge.get("is_abs_pitch_challenge", False):
+        if not self._is_supported_abs_challenge(challenge):
             logger.debug(
                 "Skipping non-ABS/ambiguous challenge uid=%s review_type=%s",
                 uid, review_type,
