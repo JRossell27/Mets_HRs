@@ -28,6 +28,7 @@ DATA_FILE = _DATA_DIR / "abs_season_data.json"
 
 # Minimum challenges a player needs to appear in the leaderboard.
 MIN_CHALLENGES = 3
+CLASSIFIER_VERSION = 16
 CLASSIFIER_VERSION = 15
 
 
@@ -79,6 +80,7 @@ class ABSSeasonTracker:
         self.data.setdefault("daily_recap_posted", [])
         self.data.setdefault("players", {})
         self.data.setdefault("recorded_challenge_uids", [])
+        self.data.setdefault("recorded_challenge_fingerprints", [])
         self.data.setdefault("posted_discord_uids", [])
         self.data.setdefault("posted_discord_fingerprints", [])
         self.data.setdefault("classifier_version", 1)
@@ -90,6 +92,12 @@ class ABSSeasonTracker:
         elif not isinstance(recorded, list):
             self.data["recorded_challenge_uids"] = []
 
+        recorded_fp = self.data.get("recorded_challenge_fingerprints")
+        if isinstance(recorded_fp, dict):
+            self.data["recorded_challenge_fingerprints"] = list(recorded_fp.keys())
+        elif not isinstance(recorded_fp, list):
+            self.data["recorded_challenge_fingerprints"] = []
+
         # If challenge-classification logic changed, rebuild stats from scratch
         # on next backfill so persisted totals stay consistent with new filters.
         if self.data.get("classifier_version", 1) < CLASSIFIER_VERSION:
@@ -100,6 +108,7 @@ class ABSSeasonTracker:
             self.data["classifier_version"] = CLASSIFIER_VERSION
             self.data["players"] = {}
             self.data["recorded_challenge_uids"] = []
+            self.data["recorded_challenge_fingerprints"] = []
             self.data["processed_game_pks"] = []
             self.data["daily_recap_posted"] = []
             # NOTE: posted_discord_uids is intentionally NOT cleared here.
@@ -164,8 +173,16 @@ class ABSSeasonTracker:
         """
         uid = challenge.get("uid", "?")
         recorded_uids = set(self.data.get("recorded_challenge_uids", []))
+        recorded_fingerprints = set(self.data.get("recorded_challenge_fingerprints", []))
         if uid in recorded_uids:
             logger.debug("Skipping duplicate already-recorded challenge uid=%s", uid)
+            return False
+        fingerprint = self._challenge_fingerprint(challenge)
+        if fingerprint in recorded_fingerprints:
+            logger.debug(
+                "Skipping duplicate already-recorded challenge fingerprint=%s uid=%s",
+                fingerprint, uid,
+            )
             return False
 
         if challenge.get("is_in_progress"):
@@ -236,8 +253,33 @@ class ABSSeasonTracker:
         p["team"] = team  # update to most recent team (trades, etc.)
         self.data["last_updated"] = datetime.now(EASTERN).isoformat()
         self.data.setdefault("recorded_challenge_uids", []).append(uid)
+        self.data.setdefault("recorded_challenge_fingerprints", []).append(fingerprint)
         self._save()
         return True
+
+    @staticmethod
+    def _challenge_fingerprint(challenge: dict) -> str:
+        """
+        Semantic fingerprint to collapse duplicate detections of one ABS event.
+        """
+        pitch = challenge.get("pitch_info", {}) or {}
+        parts = [
+            str(challenge.get("game_pk", "")),
+            str(challenge.get("inning", "")),
+            str(challenge.get("inning_half", "")),
+            str(challenge.get("pitcher", "")),
+            str(challenge.get("batter", "")),
+            str(challenge.get("balls", "")),
+            str(challenge.get("strikes", "")),
+            str(challenge.get("outs", "")),
+            str(challenge.get("is_overturned", "")),
+            str(pitch.get("type_code", "")),
+            str(pitch.get("code", "")),
+            str(pitch.get("speed", "")),
+            str(challenge.get("event_time", "")),
+            str(challenge.get("description", "")),
+        ]
+        return "|".join(parts)
 
     # ── Stats lookups ────────────────────────────────────────────────────────
 
