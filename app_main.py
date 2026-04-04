@@ -111,6 +111,9 @@ def _enrich_with_season_stats(challenge: dict) -> dict:
     stats = tracker.get_player_stats(challenge.get("challenger_name", ""))
     if stats:
         challenge["challenger_season_stats"] = stats
+    challenge["season_side_stats"] = tracker.get_challenge_side_totals(
+        challenge.get("challenger_role", "")
+    )
     return challenge
 
 
@@ -239,9 +242,6 @@ async def poll_mlb():
             logger.debug("Skipping non-ABS challenge uid=%s review_type=%s", uid, challenge.get("review_type"))
         elif _looks_non_abs:
             logger.debug("Skipping explicitly non-ABS challenge uid=%s review_type=%r desc=%r", uid, review_type, desc)
-
-        if not challenge.get("is_abs_pitch_challenge"):
-            logger.debug("Skipping non-ABS challenge uid=%s review_type=%s", uid, challenge.get("review_type"))
         elif not _pitch_is_called:
             logger.debug("Skipping non-called-pitch ABS uid=%s code=%r call=%r", uid, pitch_code, raw_call)
         elif challenge["is_in_progress"]:
@@ -281,6 +281,13 @@ async def poll_mlb():
             pending["fingerprint"] = _challenge_fingerprint(latest)
             challenge = latest
 
+
+        latest = await monitor.get_challenge_snapshot(challenge["game_pk"], uid)
+        if latest:
+            pending["challenge"] = latest
+            pending["fingerprint"] = _challenge_fingerprint(latest)
+            challenge = latest
+
         media_ready = bool(challenge.get("media_video_url") or challenge.get("media_image_url"))
         age_seconds = (now_et - pending["first_seen"]).total_seconds()
         if not media_ready and age_seconds < MEDIA_HOLD_SECONDS:
@@ -291,6 +298,7 @@ async def poll_mlb():
         _session_posted_uids.add(uid)
         try:
             tracker.record_challenge(challenge)
+            challenge = _enrich_with_season_stats(challenge)
             msg_text = format_challenge_message(challenge)
             if await _was_recently_posted(channel, msg_text):
                 logger.debug("Skipping recently-posted duplicate message uid=%s", uid)
@@ -408,7 +416,7 @@ async def on_ready():
 async def _run_backfill():
     """Run the season backfill in the background at startup."""
     try:
-        recorded = await tracker.backfill_season(monitor)
+        recorded = await tracker.backfill_season(monitor, rebuild=True)
         logger.info("Season backfill finished - %d historical challenges loaded", recorded)
     except Exception as exc:
         logger.error("Season backfill failed: %s", exc)
@@ -599,6 +607,49 @@ async def diag_date(ctx, date_str: str = ""):
     )
 
 
+@bot.command(name="diagbackfill")
+@commands.is_owner()
+async def diag_backfill(ctx, date_str: str = ""):
+    """
+    Show backfill pipeline counts (raw -> canonical) for one date.
+    Usage: !diagbackfill 2026-04-03
+    Owner only.
+    """
+    if not date_str:
+        date_str = datetime.now(EASTERN).strftime("%Y-%m-%d")
+
+    games = await monitor.get_games_for_date(date_str)
+    final_games = [g for g in games if tracker._is_final_game(g)]
+    await ctx.send(
+        f"Backfill diagnostics for `{date_str}`: "
+        f"{len(games)} scheduled game(s), {len(final_games)} final game(s)."
+    )
+
+    total_raw = 0
+    total_canonical = 0
+    for g in final_games:
+        game_pk = g.get("gamePk")
+        if not game_pk:
+            continue
+        feed = await monitor.get_live_feed(game_pk)
+        if not feed:
+            await ctx.send(f"`{game_pk}`: no feed")
+            continue
+        raw = monitor.extract_all_challenges_from_feed(feed, game_pk)
+        canonical = tracker._select_backfill_challenges(raw)
+        total_raw += len(raw)
+        total_canonical += len(canonical)
+        away = g.get("teams", {}).get("away", {}).get("team", {}).get("abbreviation", "?")
+        home = g.get("teams", {}).get("home", {}).get("team", {}).get("abbreviation", "?")
+        await ctx.send(
+            f"`{game_pk}` {away}@{home}: raw={len(raw)} canonical={len(canonical)}"
+        )
+
+    await ctx.send(
+        f"**Backfill totals for {date_str}: raw={total_raw}, canonical={total_canonical}**"
+    )
+
+
 @bot.command(name="resetbackfill")
 @commands.is_owner()
 async def reset_backfill(ctx):
@@ -623,6 +674,7 @@ async def help_bot(ctx):
         "**MLB Pitch Challenge Bot Commands**\n\n"
         "`!status` - Show today's games and live monitoring status\n"
         "`!absstats` - Show the current ABS season challenge leaderboard\n"
+        "`!diagbackfill YYYY-MM-DD` - (owner only) Show raw vs canonical backfill counts for one date\n"
         "`!testchallenge` - (owner only) Send a test challenge message\n"
         "`!help_bot` - Show this help message\n\n"
         "The bot automatically monitors all MLB games and posts an alert "
@@ -896,7 +948,7 @@ async def _api_post_recap(request):
 
 async def _api_run_backfill(request):
     try:
-        recorded = await tracker.backfill_season(monitor)
+        recorded = await tracker.backfill_season(monitor, rebuild=True)
         return web.Response(
             text=json.dumps({
                 "ok": True,
