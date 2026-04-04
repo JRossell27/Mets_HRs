@@ -17,7 +17,6 @@
 #   LOG_LEVEL        - Logging level (default: INFO)
 #   DATA_DIR         - Directory for persistent data file (default: current dir)
 #   AUTO_DAILY_RECAP - Enable auto posting season recap after final games (default: off)
-#   MEDIA_HOLD_SECONDS - Delay resolved challenge posts while waiting for media URLs (default: 180)
 
 import asyncio
 import json
@@ -44,7 +43,6 @@ CHANNEL_ID_STR = os.getenv("CHANNEL_ID", "")
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "30"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 AUTO_DAILY_RECAP = os.getenv("AUTO_DAILY_RECAP", "0").lower() in {"1", "true", "yes", "on"}
-MEDIA_HOLD_SECONDS = int(os.getenv("MEDIA_HOLD_SECONDS", "180"))
 
 EASTERN = pytz.timezone("US/Eastern")
 
@@ -85,7 +83,6 @@ tracker = ABSSeasonTracker()
 # posted_discord_uids fails to persist, a challenge is NEVER posted twice
 # within the same running process.
 _session_posted_uids: set = set()
-_pending_challenges: dict[str, dict] = {}
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -111,9 +108,6 @@ def _enrich_with_season_stats(challenge: dict) -> dict:
     stats = tracker.get_player_stats(challenge.get("challenger_name", ""))
     if stats:
         challenge["challenger_season_stats"] = stats
-    challenge["season_side_stats"] = tracker.get_challenge_side_totals(
-        challenge.get("challenger_role", "")
-    )
     return challenge
 
 
@@ -242,6 +236,9 @@ async def poll_mlb():
             logger.debug("Skipping non-ABS challenge uid=%s review_type=%s", uid, challenge.get("review_type"))
         elif _looks_non_abs:
             logger.debug("Skipping explicitly non-ABS challenge uid=%s review_type=%r desc=%r", uid, review_type, desc)
+
+        if not challenge.get("is_abs_pitch_challenge"):
+            logger.debug("Skipping non-ABS challenge uid=%s review_type=%s", uid, challenge.get("review_type"))
         elif not _pitch_is_called:
             logger.debug("Skipping non-called-pitch ABS uid=%s code=%r call=%r", uid, pitch_code, raw_call)
         elif challenge["is_in_progress"]:
@@ -253,70 +250,23 @@ async def poll_mlb():
         elif tracker.has_posted_fingerprint(fingerprint):
             logger.debug("Skipping already-posted fingerprint=%s uid=%s", fingerprint, uid)
         else:
-            # Queue eligible resolved challenges so we can wait for media URLs.
-            # This is helpful when third-party automations (e.g., IFTTT) poll
-            # every few minutes and media appears shortly after the event.
-            _pending_challenges.setdefault(
-                uid,
-                {
-                    "first_seen": datetime.now(EASTERN),
-                    "challenge": challenge,
-                    "fingerprint": fingerprint,
-                },
-            )
-
-    # ── Pending challenge posting (media wait window) ────────────────────────
-    now_et = datetime.now(EASTERN)
-    for uid in list(_pending_challenges.keys()):
-        pending = _pending_challenges[uid]
-        challenge = pending["challenge"]
-
-        if tracker.has_posted_discord(uid):
-            _pending_challenges.pop(uid, None)
-            continue
-
-        latest = await monitor.get_challenge_snapshot(challenge["game_pk"], uid)
-        if latest:
-            pending["challenge"] = latest
-            pending["fingerprint"] = _challenge_fingerprint(latest)
-            challenge = latest
-
-
-        latest = await monitor.get_challenge_snapshot(challenge["game_pk"], uid)
-        if latest:
-            pending["challenge"] = latest
-            pending["fingerprint"] = _challenge_fingerprint(latest)
-            challenge = latest
-
-        media_ready = bool(challenge.get("media_video_url") or challenge.get("media_image_url"))
-        age_seconds = (now_et - pending["first_seen"]).total_seconds()
-        if not media_ready and age_seconds < MEDIA_HOLD_SECONDS:
-            continue
-
-        # Add to session set BEFORE sending so that even if channel.send
-        # partially succeeds but raises (network hiccup), we never re-post.
-        _session_posted_uids.add(uid)
-        try:
-            tracker.record_challenge(challenge)
-            challenge = _enrich_with_season_stats(challenge)
-            msg_text = format_challenge_message(challenge)
-            if await _was_recently_posted(channel, msg_text):
-                logger.debug("Skipping recently-posted duplicate message uid=%s", uid)
+            # Add to session set BEFORE sending so that even if channel.send
+            # partially succeeds but raises (network hiccup), we never re-post.
+            _session_posted_uids.add(uid)
+            try:
+                tracker.record_challenge(challenge)
+                msg_text = format_challenge_message(challenge)
+                if await _was_recently_posted(channel, msg_text):
+                    logger.debug("Skipping recently-posted duplicate message uid=%s", uid)
+                    tracker.mark_discord_posted(uid)
+                    tracker.mark_fingerprint_posted(fingerprint)
+                    continue
+                await channel.send(msg_text)
                 tracker.mark_discord_posted(uid)
-                tracker.mark_fingerprint_posted(pending["fingerprint"])
-                _pending_challenges.pop(uid, None)
-                continue
-            await channel.send(msg_text)
-            tracker.mark_discord_posted(uid)
-            tracker.mark_fingerprint_posted(pending["fingerprint"])
-            logger.info(
-                "Challenge posted uid=%s (media_ready=%s age_seconds=%d)",
-                uid, media_ready, int(age_seconds)
-            )
-        except Exception as exc:
-            logger.error("Failed to post challenge message: %s", exc)
-        finally:
-            _pending_challenges.pop(uid, None)
+                tracker.mark_fingerprint_posted(fingerprint)
+                logger.info("Challenge posted uid=%s", uid)
+            except Exception as exc:
+                logger.error("Failed to post challenge message: %s", exc)
 
     # ── Daily recap check (disabled by default) ──────────────────────────────
     if AUTO_DAILY_RECAP:
@@ -416,7 +366,7 @@ async def on_ready():
 async def _run_backfill():
     """Run the season backfill in the background at startup."""
     try:
-        recorded = await tracker.backfill_season(monitor, rebuild=True)
+        recorded = await tracker.backfill_season(monitor)
         logger.info("Season backfill finished - %d historical challenges loaded", recorded)
     except Exception as exc:
         logger.error("Season backfill failed: %s", exc)
@@ -607,49 +557,6 @@ async def diag_date(ctx, date_str: str = ""):
     )
 
 
-@bot.command(name="diagbackfill")
-@commands.is_owner()
-async def diag_backfill(ctx, date_str: str = ""):
-    """
-    Show backfill pipeline counts (raw -> canonical) for one date.
-    Usage: !diagbackfill 2026-04-03
-    Owner only.
-    """
-    if not date_str:
-        date_str = datetime.now(EASTERN).strftime("%Y-%m-%d")
-
-    games = await monitor.get_games_for_date(date_str)
-    final_games = [g for g in games if tracker._is_final_game(g)]
-    await ctx.send(
-        f"Backfill diagnostics for `{date_str}`: "
-        f"{len(games)} scheduled game(s), {len(final_games)} final game(s)."
-    )
-
-    total_raw = 0
-    total_canonical = 0
-    for g in final_games:
-        game_pk = g.get("gamePk")
-        if not game_pk:
-            continue
-        feed = await monitor.get_live_feed(game_pk)
-        if not feed:
-            await ctx.send(f"`{game_pk}`: no feed")
-            continue
-        raw = monitor.extract_all_challenges_from_feed(feed, game_pk)
-        canonical = tracker._select_backfill_challenges(raw)
-        total_raw += len(raw)
-        total_canonical += len(canonical)
-        away = g.get("teams", {}).get("away", {}).get("team", {}).get("abbreviation", "?")
-        home = g.get("teams", {}).get("home", {}).get("team", {}).get("abbreviation", "?")
-        await ctx.send(
-            f"`{game_pk}` {away}@{home}: raw={len(raw)} canonical={len(canonical)}"
-        )
-
-    await ctx.send(
-        f"**Backfill totals for {date_str}: raw={total_raw}, canonical={total_canonical}**"
-    )
-
-
 @bot.command(name="resetbackfill")
 @commands.is_owner()
 async def reset_backfill(ctx):
@@ -674,7 +581,6 @@ async def help_bot(ctx):
         "**MLB Pitch Challenge Bot Commands**\n\n"
         "`!status` - Show today's games and live monitoring status\n"
         "`!absstats` - Show the current ABS season challenge leaderboard\n"
-        "`!diagbackfill YYYY-MM-DD` - (owner only) Show raw vs canonical backfill counts for one date\n"
         "`!testchallenge` - (owner only) Send a test challenge message\n"
         "`!help_bot` - Show this help message\n\n"
         "The bot automatically monitors all MLB games and posts an alert "
@@ -948,7 +854,7 @@ async def _api_post_recap(request):
 
 async def _api_run_backfill(request):
     try:
-        recorded = await tracker.backfill_season(monitor, rebuild=True)
+        recorded = await tracker.backfill_season(monitor)
         return web.Response(
             text=json.dumps({
                 "ok": True,

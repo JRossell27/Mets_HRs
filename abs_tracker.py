@@ -28,8 +28,7 @@ DATA_FILE = _DATA_DIR / "abs_season_data.json"
 
 # Minimum challenges a player needs to appear in the leaderboard.
 MIN_CHALLENGES = 3
-CLASSIFIER_VERSION = 16
-CLASSIFIER_VERSION = 15
+CLASSIFIER_VERSION = 14
 
 
 class ABSSeasonTracker:
@@ -80,7 +79,6 @@ class ABSSeasonTracker:
         self.data.setdefault("daily_recap_posted", [])
         self.data.setdefault("players", {})
         self.data.setdefault("recorded_challenge_uids", [])
-        self.data.setdefault("recorded_challenge_fingerprints", [])
         self.data.setdefault("posted_discord_uids", [])
         self.data.setdefault("posted_discord_fingerprints", [])
         self.data.setdefault("classifier_version", 1)
@@ -92,12 +90,6 @@ class ABSSeasonTracker:
         elif not isinstance(recorded, list):
             self.data["recorded_challenge_uids"] = []
 
-        recorded_fp = self.data.get("recorded_challenge_fingerprints")
-        if isinstance(recorded_fp, dict):
-            self.data["recorded_challenge_fingerprints"] = list(recorded_fp.keys())
-        elif not isinstance(recorded_fp, list):
-            self.data["recorded_challenge_fingerprints"] = []
-
         # If challenge-classification logic changed, rebuild stats from scratch
         # on next backfill so persisted totals stay consistent with new filters.
         if self.data.get("classifier_version", 1) < CLASSIFIER_VERSION:
@@ -108,7 +100,6 @@ class ABSSeasonTracker:
             self.data["classifier_version"] = CLASSIFIER_VERSION
             self.data["players"] = {}
             self.data["recorded_challenge_uids"] = []
-            self.data["recorded_challenge_fingerprints"] = []
             self.data["processed_game_pks"] = []
             self.data["daily_recap_posted"] = []
             # NOTE: posted_discord_uids is intentionally NOT cleared here.
@@ -130,39 +121,6 @@ class ABSSeasonTracker:
 
     # ── Challenge recording ──────────────────────────────────────────────────
 
-    @staticmethod
-    def _is_supported_abs_challenge(challenge: dict) -> bool:
-        """
-        Keep season totals aligned with what live posting accepts.
-        """
-        pitch_info = challenge.get("pitch_info", {}) or {}
-        raw_call = (pitch_info.get("original_call", "") or "").lower()
-        pitch_code = (pitch_info.get("code", "") or "")
-        desc = (challenge.get("description", "") or "").lower()
-        review_type = (challenge.get("review_type", "") or "").lower()
-
-        blocked_calls = ("hit by pitch", "swinging strike", "foul", "in play")
-        blocked_review_types = ("manager challenge", "umpire review", "replay review")
-        pitch_is_called = (
-            not any(s in raw_call for s in blocked_calls)
-            and (
-                pitch_code in ("B", "C")
-                or (
-                    not pitch_code
-                    and (
-                        not raw_call
-                        or "called strike" in raw_call
-                        or raw_call.startswith("ball")
-                    )
-                )
-            )
-        )
-        looks_non_abs = (
-            any(s in desc for s in blocked_calls)
-            or any(s in review_type for s in blocked_review_types)
-        )
-        return bool(challenge.get("is_abs_pitch_challenge")) and pitch_is_called and not looks_non_abs
-
     def record_challenge(self, challenge: dict) -> bool:
         """
         Record a resolved ABS pitch challenge into the season stats.
@@ -173,16 +131,8 @@ class ABSSeasonTracker:
         """
         uid = challenge.get("uid", "?")
         recorded_uids = set(self.data.get("recorded_challenge_uids", []))
-        recorded_fingerprints = set(self.data.get("recorded_challenge_fingerprints", []))
         if uid in recorded_uids:
             logger.debug("Skipping duplicate already-recorded challenge uid=%s", uid)
-            return False
-        fingerprint = self._challenge_fingerprint(challenge)
-        if fingerprint in recorded_fingerprints:
-            logger.debug(
-                "Skipping duplicate already-recorded challenge fingerprint=%s uid=%s",
-                fingerprint, uid,
-            )
             return False
 
         if challenge.get("is_in_progress"):
@@ -203,7 +153,7 @@ class ABSSeasonTracker:
         if any(t in review_type for t in non_abs_types):
             logger.debug("Skipping non-ABS challenge type=%s uid=%s", review_type, uid)
             return False
-        if not self._is_supported_abs_challenge(challenge):
+        if not challenge.get("is_abs_pitch_challenge", False):
             logger.debug(
                 "Skipping non-ABS/ambiguous challenge uid=%s review_type=%s",
                 uid, review_type,
@@ -253,33 +203,8 @@ class ABSSeasonTracker:
         p["team"] = team  # update to most recent team (trades, etc.)
         self.data["last_updated"] = datetime.now(EASTERN).isoformat()
         self.data.setdefault("recorded_challenge_uids", []).append(uid)
-        self.data.setdefault("recorded_challenge_fingerprints", []).append(fingerprint)
         self._save()
         return True
-
-    @staticmethod
-    def _challenge_fingerprint(challenge: dict) -> str:
-        """
-        Semantic fingerprint to collapse duplicate detections of one ABS event.
-        """
-        pitch = challenge.get("pitch_info", {}) or {}
-        parts = [
-            str(challenge.get("game_pk", "")),
-            str(challenge.get("inning", "")),
-            str(challenge.get("inning_half", "")),
-            str(challenge.get("pitcher", "")),
-            str(challenge.get("batter", "")),
-            str(challenge.get("balls", "")),
-            str(challenge.get("strikes", "")),
-            str(challenge.get("outs", "")),
-            str(challenge.get("is_overturned", "")),
-            str(pitch.get("type_code", "")),
-            str(pitch.get("code", "")),
-            str(pitch.get("speed", "")),
-            str(challenge.get("event_time", "")),
-            str(challenge.get("description", "")),
-        ]
-        return "|".join(parts)
 
     # ── Stats lookups ────────────────────────────────────────────────────────
 
@@ -293,43 +218,6 @@ class ABSSeasonTracker:
         if not stats or stats["challenges"] == 0:
             return None
         return stats["overturned"] / stats["challenges"] * 100
-
-    def get_side_totals(self, side: str) -> dict:
-        """
-        Return aggregated season totals for offense or defense challenges.
-
-        side:
-          - "offense" -> batter challenges
-          - "defense" -> catcher/pitcher challenges
-        """
-        if side == "offense":
-            include_roles = {"batter"}
-        elif side == "defense":
-            include_roles = {"catcher", "pitcher"}
-        else:
-            include_roles = {"batter", "catcher", "pitcher"}
-
-        players = self.data.get("players", {})
-        selected = [
-            s for s in players.values()
-            if s.get("role") in include_roles
-        ]
-        challenges = sum(s.get("challenges", 0) for s in selected)
-        overturned = sum(s.get("overturned", 0) for s in selected)
-        upheld = sum(s.get("upheld", 0) for s in selected)
-        pct = (overturned / challenges * 100) if challenges else 0.0
-        return {
-            "side": side,
-            "challenges": challenges,
-            "overturned": overturned,
-            "upheld": upheld,
-            "pct": pct,
-        }
-
-    def get_challenge_side_totals(self, challenger_role: str) -> dict:
-        """Return offense/defense aggregate for a specific challenge role."""
-        side = "offense" if challenger_role == "batter" else "defense"
-        return self.get_side_totals(side)
 
     # ── Daily recap ──────────────────────────────────────────────────────────
 
@@ -397,9 +285,6 @@ class ABSSeasonTracker:
         }
         top_fielders = sorted(fielders_qual.items(), key=sort_key)[:3]
 
-        offense_totals = self.get_side_totals("offense")
-        defense_totals = self.get_side_totals("defense")
-
         lines = [
             f"## 📊 ABS Challenge Tracker — {today_str}",
             "",
@@ -408,14 +293,6 @@ class ABSSeasonTracker:
                 f"Challenges: **{total_challenges}** · "
                 f"Overturned: **{total_overturned}** · "
                 f"Overall Success Rate: **{overall_pct:.1f}%**"
-            ),
-            (
-                f"**Offense (Batters)** · {offense_totals['overturned']}/{offense_totals['challenges']} "
-                f"(**{offense_totals['pct']:.1f}%**)"
-            ),
-            (
-                f"**Defense (Catchers/Pitchers)** · {defense_totals['overturned']}/{defense_totals['challenges']} "
-                f"(**{defense_totals['pct']:.1f}%**)"
             ),
             "",
         ]
@@ -440,57 +317,10 @@ class ABSSeasonTracker:
 
     # ── Backfill ─────────────────────────────────────────────────────────────
 
-    @staticmethod
-    def _is_final_game(game: dict) -> bool:
-        status = game.get("status", {})
-        status_code = status.get("statusCode", "")
-        abstract = status.get("abstractGameState", "")
-        final_codes = {"F", "FT", "FO", "O", "C", "CR"}
-        return abstract == "Final" or status_code in final_codes
-
-    def _select_backfill_challenges(self, challenges: list[dict]) -> list[dict]:
-        """
-        Collapse raw game-feed challenge events into one canonical record per
-        semantic challenge, preferring resolved outcomes over in-progress rows.
-        """
-        best_by_fingerprint: dict[str, tuple[int, dict]] = {}
-        for challenge in challenges:
-            if not self._is_supported_abs_challenge(challenge):
-                continue
-            fp = self._challenge_fingerprint(challenge)
-            if challenge.get("is_overturned") is True or challenge.get("is_overturned") is False:
-                score = 3
-            elif challenge.get("is_in_progress"):
-                score = 1
-            else:
-                score = 2
-            existing = best_by_fingerprint.get(fp)
-            if existing is None or score > existing[0]:
-                best_by_fingerprint[fp] = (score, challenge)
-
-        selected = [item[1] for item in best_by_fingerprint.values()]
-        selected.sort(key=lambda c: str(c.get("event_time", "")))
-        return selected
-
     async def backfill_season(self, monitor) -> int:
-    def reset_season_aggregates(self):
-        """
-        Clear all season aggregate state so backfill can rebuild deterministically.
-        """
-        self.data["players"] = {}
-        self.data["recorded_challenge_uids"] = []
-        self.data["recorded_challenge_fingerprints"] = []
-        self.data["processed_game_pks"] = []
-        self.data["last_updated"] = None
-        self._save()
-
-    async def backfill_season(self, monitor, rebuild: bool = False) -> int:
         """
         Fetch and process every completed game from SEASON_START through
         yesterday (Eastern time) that hasn't been processed yet.
-
-        If rebuild=True, reset season aggregates first and recompute from
-        scratch to avoid stale totals from prior logic.
 
         Returns the number of new challenges recorded.
         """
@@ -500,10 +330,6 @@ class ABSSeasonTracker:
         games_scanned = 0
         challenges_found = 0
 
-        if rebuild:
-            logger.warning("ABS backfill running in full rebuild mode from season start")
-            self.reset_season_aggregates()
-
         logger.info(
             "ABS backfill: scanning %s → %s",
             SEASON_START.isoformat(),
@@ -512,41 +338,36 @@ class ABSSeasonTracker:
 
         while current < today:
             date_str = current.strftime("%Y-%m-%d")
-            all_games = await monitor.get_games_for_date(date_str)
-            final_games = [g for g in all_games if self._is_final_game(g)]
-            logger.info(
-                "Backfill %s: %d games found (%d final)",
-                date_str, len(all_games), len(final_games),
-            )
-
-            games = [g for g in all_games if self._is_final_game(g)]
-            logger.info(
-                "Backfill %s: %d games found (%d final)",
-                date_str, len(all_games), len(games),
-            )
+            games = await monitor.get_games_for_date(date_str)
+            logger.info("Backfill %s: %d games found", date_str, len(games))
 
             # Log the first game's raw status so we can see what the API
             # returns - useful if games keep being skipped unexpectedly.
-            if all_games:
+            if games:
                 logger.info(
                     "Backfill %s sample game status: %s",
-                    date_str, all_games[0].get("status", {}),
+                    date_str, games[0].get("status", {}),
                 )
 
-            for game in final_games:
+            for game in games:
                 game_pk = game.get("gamePk")
                 if not game_pk or self.is_game_processed(game_pk):
                     continue
 
+                # Since we only iterate over dates BEFORE today, every game
+                # on those dates is finished.  Fetch the feed directly without
+                # trusting schedule API status codes (they vary across API
+                # versions and caused all games to be skipped previously).
                 feed = await monitor.get_live_feed(game_pk)
                 if not feed:
                     logger.warning("No feed for game %s - skipping", game_pk)
                     continue
 
+                # If there are no plays the game was postponed/cancelled.
                 all_plays = (
                     feed.get("liveData", {})
-                    .get("plays", {})
-                    .get("allPlays", [])
+                        .get("plays", {})
+                        .get("allPlays", [])
                 )
                 if not all_plays:
                     logger.debug(
@@ -557,25 +378,18 @@ class ABSSeasonTracker:
                     continue
 
                 games_scanned += 1
-                raw_challenges = monitor.extract_all_challenges_from_feed(feed, game_pk)
-                canonical = self._select_backfill_challenges(raw_challenges)
+                challenges = monitor.extract_all_challenges_from_feed(feed, game_pk)
                 logger.info(
-                    "Game %s (%s): %d raw challenge event(s), %d canonical candidate(s)",
-                    game_pk, date_str, len(raw_challenges), len(canonical),
-                challenges = self._select_backfill_challenges(raw_challenges)
-                logger.info(
-                    "Game %s (%s): %d raw challenge event(s), %d canonical candidate(s)",
-                    game_pk, date_str, len(raw_challenges), len(challenges),
+                    "Game %s (%s): %d challenge event(s) found",
+                    game_pk, date_str, len(challenges),
                 )
-                challenges_found += len(raw_challenges)
+                challenges_found += len(challenges)
 
-                for ch in canonical:
+                for ch in challenges:
                     logger.debug(
                         "Challenge uid=%s review_type=%r overturned=%s challenger=%r role=%r",
-                        ch.get("uid"),
-                        ch.get("review_type"),
-                        ch.get("is_overturned"),
-                        ch.get("challenger_name"),
+                        ch.get("uid"), ch.get("review_type"),
+                        ch.get("is_overturned"), ch.get("challenger_name"),
                         ch.get("challenger_role"),
                     )
                     if self.record_challenge(ch):
@@ -588,8 +402,6 @@ class ABSSeasonTracker:
         logger.info(
             "ABS backfill complete - scanned %d games, found %d challenge events, "
             "recorded %d new challenges",
-            games_scanned,
-            challenges_found,
-            recorded,
+            games_scanned, challenges_found, recorded,
         )
         return recorded
