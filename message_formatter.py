@@ -114,6 +114,19 @@ def _challenger_stat_line(challenge: dict) -> str:
     return f"📊 {name} ({role}) 2026: {pct:.1f}% ({overturned}/{challenges} overturned)"
 
 
+def _side_stat_line(challenge: dict) -> str:
+    """Build offense/defense season aggregate line for this challenge role."""
+    side_stats = challenge.get("season_side_stats")
+    if not side_stats or side_stats.get("challenges", 0) == 0:
+        return ""
+    role = challenge.get("challenger_role", "")
+    side_label = "Offense" if role == "batter" else "Defense"
+    return (
+        f"📈 {side_label} challenges 2026: "
+        f"{side_stats['pct']:.1f}% ({side_stats['overturned']}/{side_stats['challenges']} overturned)"
+    )
+
+
 def _format_count(balls: int, strikes: int) -> str:
     return f"{balls}-{strikes}"
 
@@ -183,6 +196,13 @@ def format_challenge_message(challenge: dict) -> str:
         media_line = f"Video: {video_url}\n"
     elif image_url:
         media_line = f"Photo: {image_url}\n"
+    challenger_line = _challenger_stat_line(challenge)
+    side_line = _side_stat_line(challenge)
+    stats_lines = ""
+    if challenger_line:
+        stats_lines += f"\n{challenger_line}"
+    if side_line:
+        stats_lines += f"\n{side_line}"
 
     twitter_text = (
         f"ABS Challenge 🚨\n"
@@ -196,6 +216,7 @@ def format_challenge_message(challenge: dict) -> str:
         f"\n"
         f"Zone: {zone_note}\n"
         f"{media_line}"
+        f"{stats_lines}\n"
         f"\n{tags}"
     )
 

@@ -111,6 +111,9 @@ def _enrich_with_season_stats(challenge: dict) -> dict:
     stats = tracker.get_player_stats(challenge.get("challenger_name", ""))
     if stats:
         challenge["challenger_season_stats"] = stats
+    challenge["season_side_stats"] = tracker.get_challenge_side_totals(
+        challenge.get("challenger_role", "")
+    )
     return challenge
 
 
@@ -288,6 +291,7 @@ async def poll_mlb():
         _session_posted_uids.add(uid)
         try:
             tracker.record_challenge(challenge)
+            challenge = _enrich_with_season_stats(challenge)
             msg_text = format_challenge_message(challenge)
             if await _was_recently_posted(channel, msg_text):
                 logger.debug("Skipping recently-posted duplicate message uid=%s", uid)
