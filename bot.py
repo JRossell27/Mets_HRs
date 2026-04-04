@@ -596,6 +596,49 @@ async def diag_date(ctx, date_str: str = ""):
     )
 
 
+@bot.command(name="diagbackfill")
+@commands.is_owner()
+async def diag_backfill(ctx, date_str: str = ""):
+    """
+    Show backfill pipeline counts (raw -> canonical) for one date.
+    Usage: !diagbackfill 2026-04-03
+    Owner only.
+    """
+    if not date_str:
+        date_str = datetime.now(EASTERN).strftime("%Y-%m-%d")
+
+    games = await monitor.get_games_for_date(date_str)
+    final_games = [g for g in games if tracker._is_final_game(g)]
+    await ctx.send(
+        f"Backfill diagnostics for `{date_str}`: "
+        f"{len(games)} scheduled game(s), {len(final_games)} final game(s)."
+    )
+
+    total_raw = 0
+    total_canonical = 0
+    for g in final_games:
+        game_pk = g.get("gamePk")
+        if not game_pk:
+            continue
+        feed = await monitor.get_live_feed(game_pk)
+        if not feed:
+            await ctx.send(f"`{game_pk}`: no feed")
+            continue
+        raw = monitor.extract_all_challenges_from_feed(feed, game_pk)
+        canonical = tracker._select_backfill_challenges(raw)
+        total_raw += len(raw)
+        total_canonical += len(canonical)
+        away = g.get("teams", {}).get("away", {}).get("team", {}).get("abbreviation", "?")
+        home = g.get("teams", {}).get("home", {}).get("team", {}).get("abbreviation", "?")
+        await ctx.send(
+            f"`{game_pk}` {away}@{home}: raw={len(raw)} canonical={len(canonical)}"
+        )
+
+    await ctx.send(
+        f"**Backfill totals for {date_str}: raw={total_raw}, canonical={total_canonical}**"
+    )
+
+
 @bot.command(name="resetbackfill")
 @commands.is_owner()
 async def reset_backfill(ctx):
@@ -620,6 +663,7 @@ async def help_bot(ctx):
         "**MLB Pitch Challenge Bot Commands**\n\n"
         "`!status` - Show today's games and live monitoring status\n"
         "`!absstats` - Show the current ABS season challenge leaderboard\n"
+        "`!diagbackfill YYYY-MM-DD` - (owner only) Show raw vs canonical backfill counts for one date\n"
         "`!testchallenge` - (owner only) Send a test challenge message\n"
         "`!help_bot` - Show this help message\n\n"
         "The bot automatically monitors all MLB games and posts an alert "
