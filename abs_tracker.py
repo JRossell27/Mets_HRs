@@ -440,10 +440,24 @@ class ABSSeasonTracker:
 
     # ── Backfill ─────────────────────────────────────────────────────────────
 
-    async def backfill_season(self, monitor) -> int:
+    def reset_season_aggregates(self):
+        """
+        Clear all season aggregate state so backfill can rebuild deterministically.
+        """
+        self.data["players"] = {}
+        self.data["recorded_challenge_uids"] = []
+        self.data["recorded_challenge_fingerprints"] = []
+        self.data["processed_game_pks"] = []
+        self.data["last_updated"] = None
+        self._save()
+
+    async def backfill_season(self, monitor, rebuild: bool = False) -> int:
         """
         Fetch and process every completed game from SEASON_START through
         yesterday (Eastern time) that hasn't been processed yet.
+
+        If rebuild=True, reset season aggregates first and recompute from
+        scratch to avoid stale totals from prior logic.
 
         Returns the number of new challenges recorded.
         """
@@ -452,6 +466,10 @@ class ABSSeasonTracker:
         recorded = 0
         games_scanned = 0
         challenges_found = 0
+
+        if rebuild:
+            logger.warning("ABS backfill running in full rebuild mode from season start")
+            self.reset_season_aggregates()
 
         logger.info(
             "ABS backfill: scanning %s → %s",
