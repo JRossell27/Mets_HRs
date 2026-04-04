@@ -440,6 +440,39 @@ class ABSSeasonTracker:
 
     # ── Backfill ─────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _is_final_game(game: dict) -> bool:
+        status = game.get("status", {})
+        status_code = status.get("statusCode", "")
+        abstract = status.get("abstractGameState", "")
+        final_codes = {"F", "FT", "FO", "O", "C", "CR"}
+        return abstract == "Final" or status_code in final_codes
+
+    def _select_backfill_challenges(self, challenges: list[dict]) -> list[dict]:
+        """
+        Collapse raw game-feed challenge events into one canonical record per
+        semantic challenge, preferring resolved outcomes over in-progress rows.
+        """
+        best_by_fingerprint: dict[str, tuple[int, dict]] = {}
+        for challenge in challenges:
+            if not self._is_supported_abs_challenge(challenge):
+                continue
+            fp = self._challenge_fingerprint(challenge)
+            if challenge.get("is_overturned") is True or challenge.get("is_overturned") is False:
+                score = 3
+            elif challenge.get("is_in_progress"):
+                score = 1
+            else:
+                score = 2
+            existing = best_by_fingerprint.get(fp)
+            if existing is None or score > existing[0]:
+                best_by_fingerprint[fp] = (score, challenge)
+
+        selected = [item[1] for item in best_by_fingerprint.values()]
+        selected.sort(key=lambda c: str(c.get("event_time", "")))
+        return selected
+
+    async def backfill_season(self, monitor) -> int:
     def reset_season_aggregates(self):
         """
         Clear all season aggregate state so backfill can rebuild deterministically.
@@ -479,15 +512,19 @@ class ABSSeasonTracker:
 
         while current < today:
             date_str = current.strftime("%Y-%m-%d")
-            games = await monitor.get_games_for_date(date_str)
-            logger.info("Backfill %s: %d games found", date_str, len(games))
+            all_games = await monitor.get_games_for_date(date_str)
+            games = [g for g in all_games if self._is_final_game(g)]
+            logger.info(
+                "Backfill %s: %d games found (%d final)",
+                date_str, len(all_games), len(games),
+            )
 
             # Log the first game's raw status so we can see what the API
             # returns - useful if games keep being skipped unexpectedly.
-            if games:
+            if all_games:
                 logger.info(
                     "Backfill %s sample game status: %s",
-                    date_str, games[0].get("status", {}),
+                    date_str, all_games[0].get("status", {}),
                 )
 
             for game in games:
@@ -495,10 +532,6 @@ class ABSSeasonTracker:
                 if not game_pk or self.is_game_processed(game_pk):
                     continue
 
-                # Since we only iterate over dates BEFORE today, every game
-                # on those dates is finished.  Fetch the feed directly without
-                # trusting schedule API status codes (they vary across API
-                # versions and caused all games to be skipped previously).
                 feed = await monitor.get_live_feed(game_pk)
                 if not feed:
                     logger.warning("No feed for game %s - skipping", game_pk)
@@ -519,12 +552,13 @@ class ABSSeasonTracker:
                     continue
 
                 games_scanned += 1
-                challenges = monitor.extract_all_challenges_from_feed(feed, game_pk)
+                raw_challenges = monitor.extract_all_challenges_from_feed(feed, game_pk)
+                challenges = self._select_backfill_challenges(raw_challenges)
                 logger.info(
-                    "Game %s (%s): %d challenge event(s) found",
-                    game_pk, date_str, len(challenges),
+                    "Game %s (%s): %d raw challenge event(s), %d canonical candidate(s)",
+                    game_pk, date_str, len(raw_challenges), len(challenges),
                 )
-                challenges_found += len(challenges)
+                challenges_found += len(raw_challenges)
 
                 for ch in challenges:
                     logger.debug(
