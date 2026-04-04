@@ -219,6 +219,43 @@ class ABSSeasonTracker:
             return None
         return stats["overturned"] / stats["challenges"] * 100
 
+    def get_side_totals(self, side: str) -> dict:
+        """
+        Return aggregated season totals for offense or defense challenges.
+
+        side:
+          - "offense" -> batter challenges
+          - "defense" -> catcher/pitcher challenges
+        """
+        if side == "offense":
+            include_roles = {"batter"}
+        elif side == "defense":
+            include_roles = {"catcher", "pitcher"}
+        else:
+            include_roles = {"batter", "catcher", "pitcher"}
+
+        players = self.data.get("players", {})
+        selected = [
+            s for s in players.values()
+            if s.get("role") in include_roles
+        ]
+        challenges = sum(s.get("challenges", 0) for s in selected)
+        overturned = sum(s.get("overturned", 0) for s in selected)
+        upheld = sum(s.get("upheld", 0) for s in selected)
+        pct = (overturned / challenges * 100) if challenges else 0.0
+        return {
+            "side": side,
+            "challenges": challenges,
+            "overturned": overturned,
+            "upheld": upheld,
+            "pct": pct,
+        }
+
+    def get_challenge_side_totals(self, challenger_role: str) -> dict:
+        """Return offense/defense aggregate for a specific challenge role."""
+        side = "offense" if challenger_role == "batter" else "defense"
+        return self.get_side_totals(side)
+
     # ── Daily recap ──────────────────────────────────────────────────────────
 
     def has_posted_recap(self, date_str: str) -> bool:
@@ -285,6 +322,9 @@ class ABSSeasonTracker:
         }
         top_fielders = sorted(fielders_qual.items(), key=sort_key)[:3]
 
+        offense_totals = self.get_side_totals("offense")
+        defense_totals = self.get_side_totals("defense")
+
         lines = [
             f"## 📊 ABS Challenge Tracker — {today_str}",
             "",
@@ -293,6 +333,14 @@ class ABSSeasonTracker:
                 f"Challenges: **{total_challenges}** · "
                 f"Overturned: **{total_overturned}** · "
                 f"Overall Success Rate: **{overall_pct:.1f}%**"
+            ),
+            (
+                f"**Offense (Batters)** · {offense_totals['overturned']}/{offense_totals['challenges']} "
+                f"(**{offense_totals['pct']:.1f}%**)"
+            ),
+            (
+                f"**Defense (Catchers/Pitchers)** · {defense_totals['overturned']}/{defense_totals['challenges']} "
+                f"(**{defense_totals['pct']:.1f}%**)"
             ),
             "",
         ]
