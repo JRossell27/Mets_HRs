@@ -28,7 +28,7 @@ DATA_FILE = _DATA_DIR / "abs_season_data.json"
 
 # Minimum challenges a player needs to appear in the leaderboard.
 MIN_CHALLENGES = 3
-CLASSIFIER_VERSION = 14
+CLASSIFIER_VERSION = 15
 
 
 class ABSSeasonTracker:
@@ -85,6 +85,13 @@ class ABSSeasonTracker:
         self.data.setdefault("posted_discord_uids", [])
         self.data.setdefault("posted_discord_fingerprints", [])
         self.data.setdefault("classifier_version", 1)
+        for player in self.data.get("players", {}).values():
+            player.setdefault("role_stats", {})
+            for role in ("batter", "catcher", "pitcher"):
+                role_bucket = player["role_stats"].setdefault(role, {})
+                role_bucket.setdefault("challenges", 0)
+                role_bucket.setdefault("overturned", 0)
+                role_bucket.setdefault("upheld", 0)
 
         # Backward/forward compatibility: support list or dict.
         recorded = self.data.get("recorded_challenge_uids")
@@ -222,14 +229,32 @@ class ABSSeasonTracker:
                 "challenges": 0,
                 "overturned": 0,
                 "upheld": 0,
+                "role_stats": {
+                    "batter": {"challenges": 0, "overturned": 0, "upheld": 0},
+                    "catcher": {"challenges": 0, "overturned": 0, "upheld": 0},
+                    "pitcher": {"challenges": 0, "overturned": 0, "upheld": 0},
+                },
             }
 
         p = players[challenger_name]
+        p.setdefault("role_stats", {})
+        for role in ("batter", "catcher", "pitcher"):
+            role_bucket = p["role_stats"].setdefault(role, {})
+            role_bucket.setdefault("challenges", 0)
+            role_bucket.setdefault("overturned", 0)
+            role_bucket.setdefault("upheld", 0)
+
         p["challenges"] += 1
         if is_overturned:
             p["overturned"] += 1
         else:
             p["upheld"] += 1
+        role_bucket = p["role_stats"][challenger_role]
+        role_bucket["challenges"] += 1
+        if is_overturned:
+            role_bucket["overturned"] += 1
+        else:
+            role_bucket["upheld"] += 1
 
         # Keep role at the most specific value (catcher beats pitcher)
         if challenger_role in ("batter", "catcher"):
@@ -307,6 +332,19 @@ class ABSSeasonTracker:
         def rate(s: dict) -> float:
             return s["overturned"] / s["challenges"] if s["challenges"] else 0.0
 
+        def role_stats(s: dict, role: str) -> dict:
+            rs = s.get("role_stats", {})
+            if role in rs:
+                return rs[role]
+            # Backward compatibility for older saved data before role split.
+            if s.get("role") == role:
+                return {
+                    "challenges": s.get("challenges", 0),
+                    "overturned": s.get("overturned", 0),
+                    "upheld": s.get("upheld", 0),
+                }
+            return {"challenges": 0, "overturned": 0, "upheld": 0}
+
         def player_row(rank: int, name: str, s: dict) -> str:
             pct = rate(s) * 100
             return (
@@ -317,17 +355,31 @@ class ABSSeasonTracker:
         sort_key = lambda x: (-x[1]["overturned"], -rate(x[1]))
 
         def ranked(role: str) -> list:
-            qual = {
-                n: s for n, s in players.items()
-                if s["role"] == role and s["challenges"] >= MIN_CHALLENGES
-            }
+            qual = {}
+            for n, s in players.items():
+                rs = role_stats(s, role)
+                if rs["challenges"] >= MIN_CHALLENGES:
+                    qual[n] = {
+                        "team": s.get("team", ""),
+                        "challenges": rs["challenges"],
+                        "overturned": rs["overturned"],
+                        "upheld": rs["upheld"],
+                    }
             return sorted(qual.items(), key=sort_key)[:3]
 
         top_batters = ranked("batter")
-        fielders_qual = {
-            n: s for n, s in players.items()
-            if s["role"] != "batter" and s["challenges"] >= MIN_CHALLENGES
-        }
+        fielders_qual = {}
+        for n, s in players.items():
+            catcher = role_stats(s, "catcher")
+            pitcher = role_stats(s, "pitcher")
+            combined = {
+                "team": s.get("team", ""),
+                "challenges": catcher["challenges"] + pitcher["challenges"],
+                "overturned": catcher["overturned"] + pitcher["overturned"],
+                "upheld": catcher["upheld"] + pitcher["upheld"],
+            }
+            if combined["challenges"] >= MIN_CHALLENGES:
+                fielders_qual[n] = combined
         top_fielders = sorted(fielders_qual.items(), key=sort_key)[:3]
 
         lines = [
