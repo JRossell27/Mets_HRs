@@ -286,6 +286,12 @@ async def poll_mlb():
         if not media_ready and age_seconds < MEDIA_HOLD_SECONDS:
             continue
 
+
+        media_ready = bool(challenge.get("media_video_url") or challenge.get("media_image_url"))
+        age_seconds = (now_et - pending["first_seen"]).total_seconds()
+        if not media_ready and age_seconds < MEDIA_HOLD_SECONDS:
+            continue
+
         # Add to session set BEFORE sending so that even if channel.send
         # partially succeeds but raises (network hiccup), we never re-post.
         _session_posted_uids.add(uid)

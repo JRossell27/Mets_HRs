@@ -281,6 +281,13 @@ async def poll_mlb():
             pending["fingerprint"] = _challenge_fingerprint(latest)
             challenge = latest
 
+
+        latest = await monitor.get_challenge_snapshot(challenge["game_pk"], uid)
+        if latest:
+            pending["challenge"] = latest
+            pending["fingerprint"] = _challenge_fingerprint(latest)
+            challenge = latest
+
         media_ready = bool(challenge.get("media_video_url") or challenge.get("media_image_url"))
         age_seconds = (now_et - pending["first_seen"]).total_seconds()
         if not media_ready and age_seconds < MEDIA_HOLD_SECONDS:

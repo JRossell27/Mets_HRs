@@ -18,6 +18,9 @@ TEAM_HASHTAGS = {
     "SF": "#Giants",
 }
 
+# Dummy deploy bump: no-op constant used to trigger redeploys when needed.
+DUMMY_DEPLOY_BUMP = "2026-04-04"
+
 
 def _result_line(challenge: dict) -> str:
     """Return a short result status string."""
@@ -214,6 +217,7 @@ def format_challenge_message(challenge: dict) -> str:
         f"ABS: {abs_call}\n"
         f"Result: {decision} → Count: {new_count}\n"
         f"\n"
+        f"{media_line}"
         f"Zone: {zone_note}\n"
         f"{media_line}"
         f"{stats_lines}\n"
