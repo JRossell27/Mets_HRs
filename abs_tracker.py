@@ -59,6 +59,8 @@ class ABSSeasonTracker:
             "processed_game_pks": [],
             # unique challenge IDs already recorded in season totals
             "recorded_challenge_uids": [],
+            # challenge objects skipped from season totals with reason metadata
+            "skipped_challenges": [],
             # dates (YYYY-MM-DD) for which the daily recap has been posted
             "daily_recap_posted": [],
         }
@@ -79,6 +81,7 @@ class ABSSeasonTracker:
         self.data.setdefault("daily_recap_posted", [])
         self.data.setdefault("players", {})
         self.data.setdefault("recorded_challenge_uids", [])
+        self.data.setdefault("skipped_challenges", [])
         self.data.setdefault("posted_discord_uids", [])
         self.data.setdefault("posted_discord_fingerprints", [])
         self.data.setdefault("classifier_version", 1)
@@ -100,6 +103,7 @@ class ABSSeasonTracker:
             self.data["classifier_version"] = CLASSIFIER_VERSION
             self.data["players"] = {}
             self.data["recorded_challenge_uids"] = []
+            self.data["skipped_challenges"] = []
             self.data["processed_game_pks"] = []
             self.data["daily_recap_posted"] = []
             # NOTE: posted_discord_uids is intentionally NOT cleared here.
@@ -121,6 +125,25 @@ class ABSSeasonTracker:
 
     # ── Challenge recording ──────────────────────────────────────────────────
 
+    def _record_skip_reason(self, challenge: dict, reason: str):
+        """
+        Persist skipped challenge metadata for discrepancy debugging.
+        """
+        skipped = self.data.setdefault("skipped_challenges", [])
+        uid = challenge.get("uid", "?")
+        skipped.append({
+            "uid": uid,
+            "reason": reason,
+            "game_pk": challenge.get("game_pk"),
+            "review_type": challenge.get("review_type", ""),
+            "description": challenge.get("description", ""),
+            "challenger_name": challenge.get("challenger_name", ""),
+            "challenger_role": challenge.get("challenger_role", ""),
+            "challenging_team": challenge.get("challenging_team", ""),
+            "is_in_progress": challenge.get("is_in_progress"),
+            "is_overturned": challenge.get("is_overturned"),
+        })
+
     def record_challenge(self, challenge: dict) -> bool:
         """
         Record a resolved ABS pitch challenge into the season stats.
@@ -137,6 +160,8 @@ class ABSSeasonTracker:
 
         if challenge.get("is_in_progress"):
             logger.debug("Skipping in-progress challenge uid=%s", uid)
+            self._record_skip_reason(challenge, "in_progress")
+            self._save()
             return False
 
         if challenge.get("is_overturned") is None:
@@ -144,6 +169,8 @@ class ABSSeasonTracker:
                 "Skipping challenge with no outcome (uid=%s review_type=%s)",
                 uid, challenge.get("review_type"),
             )
+            self._record_skip_reason(challenge, "no_outcome")
+            self._save()
             return False
 
         # Block explicitly non-ABS types; accept anything else that triggered
@@ -152,18 +179,26 @@ class ABSSeasonTracker:
         non_abs_types = ("Manager Challenge", "Replay Review", "Umpire Review")
         if any(t in review_type for t in non_abs_types):
             logger.debug("Skipping non-ABS challenge type=%s uid=%s", review_type, uid)
+            self._record_skip_reason(challenge, "non_abs_review_type")
+            self._save()
             return False
         if not challenge.get("is_abs_pitch_challenge", False):
             logger.debug(
                 "Skipping non-ABS/ambiguous challenge uid=%s review_type=%s",
                 uid, review_type,
             )
+            self._record_skip_reason(challenge, "not_abs_pitch_challenge")
+            self._save()
             return False
         if challenge.get("challenging_team") in ("", "Unknown Team"):
             logger.debug("Skipping challenge with unknown challenging team uid=%s", uid)
+            self._record_skip_reason(challenge, "unknown_challenging_team")
+            self._save()
             return False
         if challenge.get("challenger_role") not in ("batter", "catcher", "pitcher"):
             logger.debug("Skipping challenge with unsupported role uid=%s", uid)
+            self._record_skip_reason(challenge, "unsupported_challenger_role")
+            self._save()
             return False
         challenger_name = challenge.get("challenger_name", "").strip()
         challenger_role = challenge.get("challenger_role", "").strip()
@@ -172,6 +207,8 @@ class ABSSeasonTracker:
                 "Skipping challenge - missing challenger info (uid=%s name=%r role=%r)",
                 uid, challenger_name, challenger_role,
             )
+            self._record_skip_reason(challenge, "missing_challenger_info")
+            self._save()
             return False
 
         team = challenge.get("challenging_team", "")
@@ -205,6 +242,14 @@ class ABSSeasonTracker:
         self.data.setdefault("recorded_challenge_uids", []).append(uid)
         self._save()
         return True
+
+    def get_skip_reason_counts(self) -> dict[str, int]:
+        """Return skip-reason -> count map for recorded skipped challenges."""
+        out: dict[str, int] = {}
+        for entry in self.data.get("skipped_challenges", []):
+            reason = entry.get("reason", "unknown")
+            out[reason] = out.get(reason, 0) + 1
+        return out
 
     # ── Stats lookups ────────────────────────────────────────────────────────
 
