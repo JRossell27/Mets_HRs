@@ -408,7 +408,7 @@ async def on_ready():
 async def _run_backfill():
     """Run the season backfill in the background at startup."""
     try:
-        recorded = await tracker.backfill_season(monitor)
+        recorded = await tracker.backfill_season(monitor, rebuild=True)
         logger.info("Season backfill finished - %d historical challenges loaded", recorded)
     except Exception as exc:
         logger.error("Season backfill failed: %s", exc)
@@ -896,7 +896,7 @@ async def _api_post_recap(request):
 
 async def _api_run_backfill(request):
     try:
-        recorded = await tracker.backfill_season(monitor)
+        recorded = await tracker.backfill_season(monitor, rebuild=True)
         return web.Response(
             text=json.dumps({
                 "ok": True,
