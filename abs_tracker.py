@@ -29,6 +29,7 @@ DATA_FILE = _DATA_DIR / "abs_season_data.json"
 # Minimum challenges a player needs to appear in the leaderboard.
 MIN_CHALLENGES = 3
 CLASSIFIER_VERSION = 16
+CLASSIFIER_VERSION = 15
 
 
 class ABSSeasonTracker:
@@ -472,9 +473,24 @@ class ABSSeasonTracker:
         return selected
 
     async def backfill_season(self, monitor) -> int:
+    def reset_season_aggregates(self):
+        """
+        Clear all season aggregate state so backfill can rebuild deterministically.
+        """
+        self.data["players"] = {}
+        self.data["recorded_challenge_uids"] = []
+        self.data["recorded_challenge_fingerprints"] = []
+        self.data["processed_game_pks"] = []
+        self.data["last_updated"] = None
+        self._save()
+
+    async def backfill_season(self, monitor, rebuild: bool = False) -> int:
         """
         Fetch and process every completed game from SEASON_START through
         yesterday (Eastern time) that hasn't been processed yet.
+
+        If rebuild=True, reset season aggregates first and recompute from
+        scratch to avoid stale totals from prior logic.
 
         Returns the number of new challenges recorded.
         """
@@ -483,6 +499,10 @@ class ABSSeasonTracker:
         recorded = 0
         games_scanned = 0
         challenges_found = 0
+
+        if rebuild:
+            logger.warning("ABS backfill running in full rebuild mode from season start")
+            self.reset_season_aggregates()
 
         logger.info(
             "ABS backfill: scanning %s → %s",
@@ -499,6 +519,14 @@ class ABSSeasonTracker:
                 date_str, len(all_games), len(final_games),
             )
 
+            games = [g for g in all_games if self._is_final_game(g)]
+            logger.info(
+                "Backfill %s: %d games found (%d final)",
+                date_str, len(all_games), len(games),
+            )
+
+            # Log the first game's raw status so we can see what the API
+            # returns - useful if games keep being skipped unexpectedly.
             if all_games:
                 logger.info(
                     "Backfill %s sample game status: %s",
@@ -534,6 +562,10 @@ class ABSSeasonTracker:
                 logger.info(
                     "Game %s (%s): %d raw challenge event(s), %d canonical candidate(s)",
                     game_pk, date_str, len(raw_challenges), len(canonical),
+                challenges = self._select_backfill_challenges(raw_challenges)
+                logger.info(
+                    "Game %s (%s): %d raw challenge event(s), %d canonical candidate(s)",
+                    game_pk, date_str, len(raw_challenges), len(challenges),
                 )
                 challenges_found += len(raw_challenges)
 
