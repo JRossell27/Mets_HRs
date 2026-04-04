@@ -3,8 +3,6 @@ Format MLB pitch challenge events into Twitter-ready text messages.
 Each message is designed to be copy-pasted directly to Twitter/X.
 """
 
-from typing import Optional
-
 # Team abbreviation → Twitter hashtag mapping
 TEAM_HASHTAGS = {
     "NYM": "#LGM",       "NYY": "#RepBX",    "BOS": "#RedSox",
@@ -19,6 +17,9 @@ TEAM_HASHTAGS = {
     "COL": "#Rockies",   "LAD": "#Dodgers",  "SD": "#Padres",
     "SF": "#Giants",
 }
+
+# Dummy deploy bump: no-op constant used to trigger redeploys when needed.
+DUMMY_DEPLOY_BUMP = "2026-04-04"
 
 
 def _result_line(challenge: dict) -> str:
@@ -116,11 +117,40 @@ def _challenger_stat_line(challenge: dict) -> str:
     return f"📊 {name} ({role}) 2026: {pct:.1f}% ({overturned}/{challenges} overturned)"
 
 
+def _format_count(balls: int, strikes: int) -> str:
+    return f"{balls}-{strikes}"
+
+
+def _pre_pitch_count(challenge: dict, original_call: str) -> str:
+    """Approximate count before the challenged pitch."""
+    balls = int(challenge.get("balls", 0))
+    strikes = int(challenge.get("strikes", 0))
+
+    if original_call == "Strike":
+        strikes = max(0, strikes - 1)
+    elif original_call == "Ball":
+        balls = max(0, balls - 1)
+
+    return _format_count(balls, strikes)
+
+
+def _new_count(challenge: dict, original_call: str) -> str:
+    """Compute count after review result."""
+    pre = _pre_pitch_count(challenge, original_call)
+    pre_balls, pre_strikes = (int(x) for x in pre.split("-"))
+    overturned = challenge.get("is_overturned")
+
+    if overturned is True and original_call == "Strike":
+        return _format_count(pre_balls + 1, pre_strikes)
+    if overturned is True and original_call == "Ball":
+        return _format_count(pre_balls, pre_strikes + 1)
+    if overturned is False:
+        return _format_count(int(challenge.get("balls", 0)), int(challenge.get("strikes", 0)))
+    return "Pending"
+
+
 def format_challenge_message(challenge: dict) -> str:
-    """
-    Build a full Discord message with a Twitter-ready block.
-    Returns a string ready to send in Discord.
-    """
+    """Build a Discord message with the ABS challenge template text."""
     away = challenge["away_team"]
     home = challenge["home_team"]
     away_abbr = challenge["away_abbr"]
@@ -131,43 +161,46 @@ def format_challenge_message(challenge: dict) -> str:
     half = challenge["inning_half"]
     pitcher = challenge["pitcher"]
     batter = challenge["batter"]
-    challenging_team = challenge["challenging_team"]
-    review_type = challenge["review_type"]
-    venue = challenge["venue"]
-    balls = challenge["balls"]
-    strikes = challenge["strikes"]
-    outs = challenge["outs"]
-    pitch_info = challenge["pitch_info"]
-    result = _result_line(challenge)
-    pitch_line = _pitch_line(pitch_info) if pitch_info else "No pitch data available"
+    pitch_info = challenge.get("pitch_info", {})
     tags = _hashtags(away_abbr, home_abbr)
-    score_str = f"{away} {away_score} - {home_score} {home}"
-    inning_str = f"{half} {inning}"
-    count_str = f"{balls}-{strikes}, {outs} out{'s' if outs != 1 else ''}"
+
     if challenge.get("is_abs_pitch_challenge"):
         original_call = _abs_original_call(challenge)
     else:
         original_call = _normalize_call(pitch_info.get("original_call", ""))
-    result_call = _result_call(challenge)
 
-    stat_line = ""  # season stats removed from live posts
+    abs_call = _result_call(challenge)
+    decision = "Pending"
+    if challenge.get("is_overturned") is True:
+        decision = "Overturned"
+    elif challenge.get("is_overturned") is False:
+        decision = "Confirmed"
+
+    pre_pitch_count = _pre_pitch_count(challenge, original_call)
+    new_count = _new_count(challenge, original_call)
+    video_url = challenge.get("media_video_url", "")
+    image_url = challenge.get("media_image_url", "")
+    media_line = ""
+    if video_url:
+        media_line = f"Video: {video_url}\n"
+    elif image_url:
+        media_line = f"Photo: {image_url}\n"
 
     twitter_text = (
-        f"ABS CHALLENGE INITIATED\n"
-        f"{result}\n"
-        f"ORIGINAL CALL: \"{original_call}\"\n"
-        f"RESULT: \"{result_call}\"\n"
+        f"ABS Challenge 🚨\n"
+        f"{away} {away_score} — {home} {home_score}\n"
+        f"{half} {inning} — Count: {pre_pitch_count}\n"
         f"\n"
-        f"🏟 {score_str} | {inning_str}\n"
-        f"⚡ {pitcher} → {batter} | {count_str}\n"
-        f"📍 {pitch_line}\n"
-        + (f"{stat_line}\n" if stat_line else "")
-        + f"\n{tags}"
+        f"{pitcher} vs {batter}\n"
+        f"Called: {original_call}\n"
+        f"ABS: {abs_call}\n"
+        f"Result: {decision} → Count: {new_count}\n"
+        f"\n"
+        f"{media_line}"
+        f"\n{tags}"
     )
 
-    discord_message = f"```\n{twitter_text}\n```"
-
-    return discord_message
+    return f"```\n{twitter_text}\n```"
 
 
 def format_update_message(challenge: dict) -> str:
