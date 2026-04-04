@@ -513,6 +513,12 @@ class ABSSeasonTracker:
         while current < today:
             date_str = current.strftime("%Y-%m-%d")
             all_games = await monitor.get_games_for_date(date_str)
+            final_games = [g for g in all_games if self._is_final_game(g)]
+            logger.info(
+                "Backfill %s: %d games found (%d final)",
+                date_str, len(all_games), len(final_games),
+            )
+
             games = [g for g in all_games if self._is_final_game(g)]
             logger.info(
                 "Backfill %s: %d games found (%d final)",
@@ -527,7 +533,7 @@ class ABSSeasonTracker:
                     date_str, all_games[0].get("status", {}),
                 )
 
-            for game in games:
+            for game in final_games:
                 game_pk = game.get("gamePk")
                 if not game_pk or self.is_game_processed(game_pk):
                     continue
@@ -537,11 +543,10 @@ class ABSSeasonTracker:
                     logger.warning("No feed for game %s - skipping", game_pk)
                     continue
 
-                # If there are no plays the game was postponed/cancelled.
                 all_plays = (
                     feed.get("liveData", {})
-                        .get("plays", {})
-                        .get("allPlays", [])
+                    .get("plays", {})
+                    .get("allPlays", [])
                 )
                 if not all_plays:
                     logger.debug(
@@ -553,6 +558,10 @@ class ABSSeasonTracker:
 
                 games_scanned += 1
                 raw_challenges = monitor.extract_all_challenges_from_feed(feed, game_pk)
+                canonical = self._select_backfill_challenges(raw_challenges)
+                logger.info(
+                    "Game %s (%s): %d raw challenge event(s), %d canonical candidate(s)",
+                    game_pk, date_str, len(raw_challenges), len(canonical),
                 challenges = self._select_backfill_challenges(raw_challenges)
                 logger.info(
                     "Game %s (%s): %d raw challenge event(s), %d canonical candidate(s)",
@@ -560,11 +569,13 @@ class ABSSeasonTracker:
                 )
                 challenges_found += len(raw_challenges)
 
-                for ch in challenges:
+                for ch in canonical:
                     logger.debug(
                         "Challenge uid=%s review_type=%r overturned=%s challenger=%r role=%r",
-                        ch.get("uid"), ch.get("review_type"),
-                        ch.get("is_overturned"), ch.get("challenger_name"),
+                        ch.get("uid"),
+                        ch.get("review_type"),
+                        ch.get("is_overturned"),
+                        ch.get("challenger_name"),
                         ch.get("challenger_role"),
                     )
                     if self.record_challenge(ch):
@@ -577,6 +588,8 @@ class ABSSeasonTracker:
         logger.info(
             "ABS backfill complete - scanned %d games, found %d challenge events, "
             "recorded %d new challenges",
-            games_scanned, challenges_found, recorded,
+            games_scanned,
+            challenges_found,
+            recorded,
         )
         return recorded
