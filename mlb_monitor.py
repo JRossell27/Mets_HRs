@@ -424,24 +424,14 @@ class MLBMonitor:
                             specific_idx = idx
                             break
                 if specific_idx is None:
-                    # Priority 4: use challengeTeamId to search for the specific
-                    # disputed pitch type.
-                    #   Batter challenged → disputed a Called Strike → look for "C"
-                    #   Fielder challenged → disputed a Ball → look for "B"
-                    # This avoids landing on a different call type thrown later in
-                    # the at-bat after the review (e.g. a ball thrown after a batter
-                    # won their ABS challenge on a called strike).
-                    _p4_is_top = play.get("about", {}).get("isTopInning", True)
-                    _p4_batting_id = str(
-                        teams.get("away" if _p4_is_top else "home", {}).get("id", "")
-                    )
-                    _p4_challenge_id = str(play_level_review.get("challengeTeamId", ""))
-                    if _p4_challenge_id and _p4_challenge_id == _p4_batting_id:
-                        _p4_primary = "C"   # batter challenge → look for called strike
-                    elif _p4_challenge_id:
-                        _p4_primary = "B"   # fielder challenge → look for ball
-                    else:
-                        _p4_primary = None  # unknown challenger; accept B or C
+                    # Priority 4: choose the last called pitch (B/C) in the play.
+                    #
+                    # NOTE: We intentionally do NOT key this search to
+                    # challengeTeamId ("batter -> C", "fielder -> B") because
+                    # some feeds mutate the challenged pitch code after review.
+                    # Example: a challenged Ball overturned to Strike can end up
+                    # stored as code "C", and filtering for "B" would select an
+                    # earlier unrelated ball in the at-bat.
                     for idx in range(len(play_events) - 1, -1, -1):
                         pe = play_events[idx]
                         if pe.get("isPitch", False):
@@ -449,25 +439,10 @@ class MLBMonitor:
                                 pe.get("details", {}).get("call", {}).get("code", "")
                                 or pe.get("details", {}).get("code", "")
                             )
-                            if _p4_primary and call_code == _p4_primary:
+                            if call_code in ("B", "C"):
                                 specific_idx = idx
                                 break
-                            elif not _p4_primary and call_code in ("B", "C"):
-                                specific_idx = idx
-                                break
-                    # Second pass: any called pitch if primary search failed
-                    if specific_idx is None:
-                        for idx in range(len(play_events) - 1, -1, -1):
-                            pe = play_events[idx]
-                            if pe.get("isPitch", False):
-                                call_code = (
-                                    pe.get("details", {}).get("call", {}).get("code", "")
-                                    or pe.get("details", {}).get("code", "")
-                                )
-                                if call_code in ("B", "C"):
-                                    specific_idx = idx
-                                    break
-                    # Last resort: any pitch event
+                    # Second pass: any pitch event
                     if specific_idx is None:
                         for idx in range(len(play_events) - 1, -1, -1):
                             if play_events[idx].get("isPitch", False):
