@@ -118,22 +118,32 @@ def _format_count(balls: int, strikes: int) -> str:
     return f"{balls}-{strikes}"
 
 
-def _pre_pitch_count(challenge: dict, original_call: str) -> str:
-    """Approximate count before the challenged pitch."""
+def _pre_pitch_count(challenge: dict, original_call: str, abs_call: str) -> str:
+    """
+    Approximate count before the challenged pitch.
+
+    The MLB live feed count on challenge events is often the *current* count
+    after review resolution (or the latest count in-play), not always the
+    count immediately after the original called pitch. To avoid reporting the
+    wrong pre-pitch count, prefer backing out from the resulting ABS call when
+    a challenge is resolved.
+    """
     balls = int(challenge.get("balls", 0))
     strikes = int(challenge.get("strikes", 0))
+    is_resolved = challenge.get("is_overturned") in (True, False)
+    call_for_reverse = abs_call if is_resolved else original_call
 
-    if original_call == "Strike":
+    if call_for_reverse == "Strike":
         strikes = max(0, strikes - 1)
-    elif original_call == "Ball":
+    elif call_for_reverse == "Ball":
         balls = max(0, balls - 1)
 
     return _format_count(balls, strikes)
 
 
-def _new_count(challenge: dict, original_call: str) -> str:
+def _new_count(challenge: dict, original_call: str, abs_call: str) -> str:
     """Compute count after review result."""
-    pre = _pre_pitch_count(challenge, original_call)
+    pre = _pre_pitch_count(challenge, original_call, abs_call)
     pre_balls, pre_strikes = (int(x) for x in pre.split("-"))
     overturned = challenge.get("is_overturned")
 
@@ -173,8 +183,8 @@ def format_challenge_message(challenge: dict) -> str:
     elif challenge.get("is_overturned") is False:
         decision = "Confirmed"
 
-    pre_pitch_count = _pre_pitch_count(challenge, original_call)
-    new_count = _new_count(challenge, original_call)
+    pre_pitch_count = _pre_pitch_count(challenge, original_call, abs_call)
+    new_count = _new_count(challenge, original_call, abs_call)
     video_url = challenge.get("media_video_url", "")
     image_url = challenge.get("media_image_url", "")
     media_line = ""
